@@ -1,0 +1,1022 @@
+"""
+SWHID Testing Harness
+
+A technology-neutral testing harness for comparing different SWHID implementations
+on standardized test payloads.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import yaml
+import subprocess
+import tempfile
+import shutil
+import platform
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+import logging
+
+from .plugins import SwhidImplementation, ImplementationInfo, SwhidTestResult, ComparisonResult, ImplementationDiscovery, ErrorCode, TestMetrics
+from .models import (
+    HarnessResults, RunInfo, RunnerInfo, Implementation, TestCase, 
+    ExpectedRef, Result, Metrics, ErrorInfo, Aggregates, make_run_id, get_runner_info, format_rfc3339,
+    ImplementationCapabilitiesModel, DiffEntry
+)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class SwhidHarness:
+    """Main testing harness for SWHID implementations."""
+    
+    def __init__(self, config_path: str = "config.yaml"):
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.results_dir = Path(self.config["output"]["results_dir"])
+        self.results_dir.mkdir(exist_ok=True)
+        
+        # Initialize implementation discovery
+        self.discovery = ImplementationDiscovery()
+        self.implementations = {}
+        
+    def _load_config(self) -> Dict[str, Any]:
+        """Load configuration from YAML file."""
+        with open(self.config_path, 'r') as f:
+            return yaml.safe_load(f)
+    
+    def _load_implementations(self, impl_names: Optional[List[str]] = None) -> Dict[str, SwhidImplementation]:
+        """Load implementations using the discovery system."""
+        all_implementations = self.discovery.discover_implementations()
+        
+        if impl_names is None:
+            # Use all available implementations
+            return all_implementations
+        
+        # Filter to requested implementations
+        filtered = {}
+        for name in impl_names:
+            if name in all_implementations:
+                filtered[name] = all_implementations[name]
+            else:
+                logger.warning(f"Implementation '{name}' not found")
+        
+        return filtered
+    
+    def _obj_type_to_swhid_code(self, obj_type: str) -> str:
+        """Map object type to SWHID type code."""
+        mapping = {
+            "content": "cnt",
+            "directory": "dir",
+            "revision": "rev",
+            "release": "rel",
+            "snapshot": "snp"
+        }
+        return mapping.get(obj_type, obj_type)
+    
+    def _run_single_test(self, implementation: SwhidImplementation, payload_path: str, 
+                         payload_name: str, category: Optional[str] = None) -> SwhidTestResult:
+        """Run a single test for one implementation."""
+        start_time = time.time()
+        
+        try:
+            # Determine object type from category if available, otherwise auto-detect
+            if category:
+                # Map category to object type
+                if category == "content" or category.startswith("content/"):
+                    obj_type = "content"
+                elif category == "directory" or category.startswith("directory/"):
+                    obj_type = "directory"  # Don't auto-detect as snapshot for directory tests
+                elif category == "git":
+                    obj_type = "snapshot"  # Git category means snapshot
+                else:
+                    # Fallback to auto-detection for unknown categories
+                    obj_type = implementation.detect_object_type(payload_path)
+            else:
+                # Auto-detect object type if category not provided
+                obj_type = implementation.detect_object_type(payload_path)
+            
+            # Check if implementation supports this object type
+            capabilities = implementation.get_capabilities()
+            swhid_code = self._obj_type_to_swhid_code(obj_type)
+            
+            if swhid_code not in capabilities.supported_types:
+                # Skip test - implementation doesn't support this type
+                logger.info(f"Skipping {payload_name} for {implementation.get_info().name}: unsupported type '{obj_type}' (SWHID code '{swhid_code}')")
+                return SwhidTestResult(
+                    payload_name=payload_name,
+                    payload_path=payload_path,
+                    implementation=implementation.get_info().name,
+                    swhid=None,
+                    error=f"Object type '{obj_type}' (SWHID code '{swhid_code}') not supported by implementation",
+                    duration=0.0,
+                    success=False
+                )
+            
+            # Run the test
+            swhid = implementation.compute_swhid(payload_path, obj_type)
+            duration = time.time() - start_time
+            
+            return SwhidTestResult(
+                payload_name=payload_name,
+                payload_path=payload_path,
+                implementation=implementation.get_info().name,
+                swhid=swhid,
+                error=None,
+                duration=duration,
+                success=True
+            )
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            error_str = str(e)
+            # Check if this is an "unsupported type" error that should be skipped
+            if any(phrase in error_str.lower() for phrase in [
+                "doesn't support", "does not support", "not support", 
+                "unsupported", "not supported"
+            ]):
+                logger.info(f"Skipping {payload_name} for {implementation.get_info().name}: {error_str}")
+                return SwhidTestResult(
+                    payload_name=payload_name,
+                    payload_path=payload_path,
+                    implementation=implementation.get_info().name,
+                    swhid=None,
+                    error=f"Object type not supported: {error_str}",
+                    duration=0.0,
+                    success=False
+                )
+            return SwhidTestResult(
+                payload_name=payload_name,
+                payload_path=payload_path,
+                implementation=implementation.get_info().name,
+                swhid=None,
+                error=error_str,
+                duration=duration,
+                success=False
+            )
+    
+    def _compare_results(self, payload_name: str, payload_path: str,
+                        results: Dict[str, SwhidTestResult], 
+                        expected_swhid: Optional[str] = None) -> ComparisonResult:
+        """Compare results across implementations."""
+        # Check if all implementations succeeded
+        all_success = all(r.success for r in results.values())
+        
+        if not all_success:
+            return ComparisonResult(
+                payload_name=payload_name,
+                payload_path=payload_path,
+                results=results,
+                all_match=False,
+                expected_swhid=expected_swhid
+            )
+        
+        # Get all SWHIDs
+        swhids = [r.swhid for r in results.values() if r.swhid]
+        
+        # Check if all SWHIDs match
+        all_match = len(set(swhids)) == 1 if swhids else False
+        
+        # Check against expected SWHID if provided
+        if expected_swhid and all_match:
+            all_match = swhids[0] == expected_swhid
+        
+        return ComparisonResult(
+            payload_name=payload_name,
+            payload_path=payload_path,
+            results=results,
+            all_match=all_match,
+            expected_swhid=expected_swhid
+        )
+    
+    def run_tests(self, implementations: Optional[List[str]] = None,
+                  categories: Optional[List[str]] = None) -> List[ComparisonResult]:
+        """Run tests for specified implementations and categories."""
+        # Load implementations
+        self.implementations = self._load_implementations(implementations)
+        
+        if not self.implementations:
+            logger.error("No implementations available")
+            return []
+        
+        if categories is None:
+            categories = list(self.config["payloads"].keys())
+        
+        all_results = []
+        
+        for category in sorted(categories):  # Deterministic ordering
+            if category not in self.config["payloads"]:
+                logger.warning(f"Category '{category}' not found in config")
+                continue
+                
+            logger.info(f"Testing category: {category}")
+            
+            # Sort payloads deterministically by name
+            payloads = sorted(self.config["payloads"][category], key=lambda p: p.get("name", p.get("path", "")))
+            
+            for payload in payloads:
+                payload_path = payload["path"]
+                payload_name = payload["name"]
+                expected_swhid = payload.get("expected_swhid")
+                
+                # Ensure git payloads exist by creating synthetic repos on-the-fly
+                if category == "git" and not os.path.exists(payload_path):
+                    try:
+                        self._create_minimal_git_repo(payload_path)
+                        logger.info(f"Created synthetic git payload at: {payload_path}")
+                    except Exception as e:
+                        logger.warning(f"Payload not found: {payload_path}")
+                        logger.debug(f"Failed to create git payload: {e}")
+                        continue
+                elif not os.path.exists(payload_path):
+                    logger.warning(f"Payload not found: {payload_path} - will emit SKIPPED status")
+                    # Emit SKIPPED status for missing payloads
+                    skipped_results = {}
+                    for impl_name, impl in self.implementations.items():
+                        skipped_results[impl_name] = SwhidTestResult(
+                            payload_name=payload_name,
+                            payload_path=payload_path,
+                            implementation=impl_name,
+                            success=False,
+                            swhid=None,
+                            error="Payload file not found",
+                            duration=0.0,
+                            metrics=TestMetrics(
+                                wall_ms_median=0.0,
+                                wall_ms_mad=0.0,
+                                cpu_ms_median=0.0,
+                                max_rss_kb=0
+                            )
+                        )
+                    # Create comparison result with SKIPPED status
+                    comparison = ComparisonResult(
+                        payload_name=payload_name,
+                        payload_path=payload_path,
+                        results=skipped_results,
+                        all_match=False,  # SKIPPED is not a match
+                        expected_swhid=expected_swhid
+                    )
+                    all_results.append(comparison)
+                    continue
+                
+                logger.info(f"Testing payload: {payload_name}")
+                
+                # Run tests for all implementations
+                results = {}
+                with ThreadPoolExecutor(max_workers=self.config["settings"]["parallel_tests"]) as executor:
+                    future_to_impl = {
+                        executor.submit(self._run_single_test, impl, payload_path, payload_name, category): impl
+                        for impl in self.implementations.values()
+                    }
+                    
+                    for future in as_completed(future_to_impl):
+                        impl = future_to_impl[future]
+                        try:
+                            result = future.result()
+                            results[impl.get_info().name] = result
+                        except Exception as e:
+                            logger.error(f"Error running test for {impl.get_info().name}: {e}")
+                
+                # Compare results
+                comparison = self._compare_results(payload_name, payload_path, results, expected_swhid)
+                all_results.append(comparison)
+                
+                # Log results
+                # Check for skipped implementations
+                skipped_impls = [impl_name for impl_name, result in results.items() 
+                               if not result.success and any(phrase in str(result.error).lower() 
+                                   for phrase in ["not supported", "doesn't support", "does not support", "unsupported"])]
+                
+                if comparison.all_match:
+                    logger.info(f"✓ {payload_name}: All implementations match")
+                    if expected_swhid:
+                        logger.info(f"  Expected: {expected_swhid}")
+                else:
+                    # Check if all implementations skipped
+                    if skipped_impls and len(skipped_impls) == len(results):
+                        logger.info(f"○ {payload_name}: All implementations skipped (unsupported type)")
+                    else:
+                        logger.error(f"✗ {payload_name}: Implementations differ")
+                    
+                    # Show expected result if available
+                    if expected_swhid:
+                        logger.info(f"  Expected: {expected_swhid}")
+                    
+                    # Show skipped implementations
+                    if skipped_impls:
+                        logger.info(f"  Skipped by: {', '.join(skipped_impls)}")
+                    
+                    # Group results by SWHID to show which implementations match
+                    swhid_groups = {}
+                    failed_implementations = []
+                    
+                    for impl_name, result in results.items():
+                        if result.success:
+                            swhid = result.swhid
+                            if swhid not in swhid_groups:
+                                swhid_groups[swhid] = []
+                            swhid_groups[swhid].append(impl_name)
+                        elif impl_name not in skipped_impls:
+                            failed_implementations.append((impl_name, result.error))
+                    
+                    # Show SWHID groups
+                    if len(swhid_groups) > 1:
+                        logger.error(f"  Found {len(swhid_groups)} different SWHID groups:")
+                        for i, (swhid, impls) in enumerate(swhid_groups.items(), 1):
+                            logger.error(f"    Group {i}: {swhid}")
+                            logger.error(f"      Implementations: {', '.join(impls)}")
+                    elif len(swhid_groups) == 1:
+                        # All successful implementations agree, but expected differs
+                        swhid = list(swhid_groups.keys())[0]
+                        impls = list(swhid_groups.values())[0]
+                        logger.error(f"  All implementations agree: {swhid}")
+                        logger.error(f"    Implementations: {', '.join(impls)}")
+                        if expected_swhid and swhid != expected_swhid:
+                            logger.error(f"    But expected: {expected_swhid}")
+                    
+                    # Show failed implementations
+                    if failed_implementations:
+                        logger.error(f"  Failed implementations:")
+                        for impl_name, error in failed_implementations:
+                            logger.error(f"    {impl_name}: {error}")
+        
+        return all_results
+
+    def _create_minimal_git_repo(self, repo_path: str):
+        """Create a small git repository with one commit, one tag, and default HEAD.
+        This is used to test snapshot identifiers.
+        """
+        import subprocess
+        import pathlib
+        path = pathlib.Path(repo_path)
+        path.mkdir(parents=True, exist_ok=True)
+
+        # Initialize repo
+        subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
+        # Configure user
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_path, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True)
+        # Create a file and commit
+        (path / "README.md").write_text("# Sample Repo\n")
+        subprocess.run(["git", "add", "README.md"], cwd=repo_path, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_path, check=True, capture_output=True)
+        # Create a branch 'feature'
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=repo_path, check=True, capture_output=True)
+        (path / "FEATURE.txt").write_text("feature\n")
+        subprocess.run(["git", "add", "FEATURE.txt"], cwd=repo_path, check=True)
+        subprocess.run(["git", "commit", "-m", "Add feature"], cwd=repo_path, check=True, capture_output=True)
+        # Switch back to main
+        subprocess.run(["git", "checkout", "-B", "main"], cwd=repo_path, check=True, capture_output=True)
+        # Create an annotated tag
+        subprocess.run(["git", "tag", "-a", "v1.0", "-m", "Release v1.0"], cwd=repo_path, check=True, capture_output=True)
+    
+    def generate_expected_results(self, implementation: str = "python"):
+        """Generate expected results using a reference implementation."""
+        logger.info(f"Generating expected results using {implementation}")
+        
+        # Load the reference implementation
+        impl = self.discovery.get_implementation(implementation)
+        if not impl:
+            logger.error(f"Reference implementation '{implementation}' not found")
+            return
+        
+        for category, payloads in self.config["payloads"].items():
+            for payload in payloads:
+                payload_path = payload["path"]
+                payload_name = payload["name"]
+                
+                if not os.path.exists(payload_path):
+                    continue
+                
+                try:
+                    # Determine object type from category
+                    # Category names map to object types: content -> content, directory -> directory, git -> snapshot
+                    if category == "git":
+                        obj_type = "snapshot"
+                    elif category == "content" or category.startswith("content/"):
+                        obj_type = "content"
+                    elif category == "directory" or category.startswith("directory/"):
+                        obj_type = "directory"
+                    else:
+                        # Fallback to auto-detection for unknown categories
+                        obj_type = impl.detect_object_type(payload_path)
+                    
+                    swhid = impl.compute_swhid(payload_path, obj_type)
+                    
+                    # Update the config with expected SWHID
+                    payload["expected_swhid"] = swhid
+                    logger.info(f"Generated expected SWHID for {payload_name}: {swhid}")
+                    
+                except Exception as e:
+                    logger.error(f"Error generating expected result for {payload_name}: {e}")
+        
+        # Save updated config
+        with open(self.config_path, 'w') as f:
+            yaml.dump(self.config, f, default_flow_style=False)
+    
+    def get_canonical_results(self, results: List[ComparisonResult], branch: str = "main", commit: str = "unknown") -> HarnessResults:
+        """Generate canonical format results."""
+        # Create run info
+        now = datetime.utcnow()
+        run_info = RunInfo(
+            id=make_run_id(),
+            created_at=now,
+            branch=branch,
+            commit=commit,
+            runner=get_runner_info()
+        )
+        
+        # Create implementation metadata
+        implementations = []
+        for impl_name, impl in self.implementations.items():
+            impl_info = impl.get_info()
+            capabilities = impl.get_capabilities()
+            
+            # Convert capabilities dataclass to Pydantic model
+            capabilities_model = ImplementationCapabilitiesModel(
+                supported_types=capabilities.supported_types,
+                supported_qualifiers=capabilities.supported_qualifiers,
+                api_version=capabilities.api_version,
+                max_payload_size_mb=capabilities.max_payload_size_mb,
+                supports_unicode=capabilities.supports_unicode,
+                supports_percent_encoding=capabilities.supports_percent_encoding
+            )
+            
+            # Try to get git SHA for implementation
+            git_sha = self._get_implementation_git_sha(impl_name, impl_info)
+            
+            # Build toolchain info
+            toolchain = {"python": platform.python_version()}
+            if impl_info.language:
+                toolchain["language"] = impl_info.language
+            
+            implementations.append(Implementation(
+                id=impl_name,
+                version=impl_info.version,
+                git_sha=git_sha,
+                git=git_sha,  # Legacy field
+                language=impl_info.language,
+                api_version=capabilities.api_version,
+                capabilities=capabilities_model,
+                toolchain=toolchain
+            ))
+        
+        # Create test cases
+        test_cases = []
+        for result in results:
+            # Determine category from payload path (distinguish basic vs edge_cases)
+            category = "unknown"
+            payload_path_normalized = result.payload_path.replace("\\", "/")
+            if "/content/" in payload_path_normalized:
+                category = "content/edge_cases" if "/edge_cases/" in payload_path_normalized else "content/basic"
+            elif "/directory/" in payload_path_normalized:
+                category = "directory/edge_cases" if "/edge_cases/" in payload_path_normalized else "directory/basic"
+            elif "archive" in payload_path_normalized:
+                category = "archive/basic"
+            elif "git" in payload_path_normalized:
+                category = "git/basic"
+            elif "negative" in payload_path_normalized:
+                category = "negative"
+            
+            # Create expected reference
+            expected = ExpectedRef(
+                reference_impl="python-swhid",  # Default reference
+                swhid=result.expected_swhid
+            )
+            
+            # Create results for each implementation
+            test_results = []
+            for impl_name, test_result in result.results.items():
+                # Determine status
+                if not test_result.success:
+                    # Check if this is a SKIPPED case (missing payload or unsupported type)
+                    error_str = str(test_result.error)
+                    # Check for various "unsupported" error patterns
+                    is_skipped = (
+                        "Payload file not found" in error_str or 
+                        "not supported by implementation" in error_str or
+                        "Object type not supported" in error_str or
+                        any(phrase in error_str.lower() for phrase in [
+                            "doesn't support", "does not support", 
+                            "not support", "unsupported"
+                        ])
+                    )
+                    if is_skipped:
+                        status = "SKIPPED"
+                        if "file not found" in error_str.lower() or "Payload file not found" in error_str:
+                            error = ErrorInfo(
+                                code="IO_ERROR",
+                                subtype="file_not_found",
+                                message=error_str,
+                                context={}
+                            )
+                        else:
+                            error = ErrorInfo(
+                                code="VALIDATION_ERROR",
+                                subtype="unsupported_type",
+                                message=error_str,
+                                context={}
+                            )
+                        swhid = None
+                    else:
+                        status = "FAIL"
+                        # Map exception to appropriate ErrorCode
+                        error_code, error_subtype = self._classify_error(test_result.error)
+                        error = ErrorInfo(
+                            code=error_code,
+                            subtype=error_subtype,
+                            message=str(test_result.error),
+                            context={}
+                        )
+                        swhid = None
+                elif result.expected_swhid and test_result.swhid != result.expected_swhid:
+                    status = "FAIL"
+                    # Create structured diff
+                    diff = [
+                        DiffEntry(
+                            path="/swhid",
+                            expected=result.expected_swhid,
+                            actual=test_result.swhid,
+                            category="value_mismatch"
+                        )
+                    ]
+                    error = ErrorInfo(
+                        code="MISMATCH_ERROR",
+                        subtype="swhid",
+                        message="SWHID mismatch",
+                        context={
+                            "got": test_result.swhid,
+                            "expected": result.expected_swhid
+                        },
+                        diff=diff
+                    )
+                    swhid = test_result.swhid
+                else:
+                    status = "PASS"
+                    error = None
+                    swhid = test_result.swhid
+                
+                # Create metrics
+                metrics = Metrics(
+                    samples=1,
+                    wall_ms_median=round(test_result.duration * 1000, 3),
+                    wall_ms_mad=0.0,
+                    cpu_ms_median=round(test_result.duration * 1000, 3),
+                    max_rss_kb=test_result.metrics.max_rss_kb if test_result.metrics else None
+                )
+                
+                test_results.append(Result(
+                    implementation=impl_name,
+                    status=status,
+                    error=error,
+                    metrics=metrics,
+                    swhid=swhid
+                ))
+            
+            test_cases.append(TestCase(
+                id=result.payload_name,
+                category=category,
+                payload_ref=result.payload_path,
+                expected=expected,
+                results=test_results
+            ))
+        
+        # Calculate aggregates
+        aggregates_data = {}
+        for impl_name in self.implementations.keys():
+            passed = sum(
+                1 for tc in test_cases for r in tc.results 
+                if r.implementation == impl_name and r.status == "PASS"
+            )
+            failed = sum(
+                1 for tc in test_cases for r in tc.results 
+                if r.implementation == impl_name and r.status == "FAIL"
+            )
+            skipped = sum(
+                1 for tc in test_cases for r in tc.results 
+                if r.implementation == impl_name and r.status == "SKIPPED"
+            )
+            aggregates_data[impl_name] = {
+                "passed": passed,
+                "failed": failed,
+                "skipped": skipped
+            }
+        
+        aggregates = Aggregates(by_implementation=aggregates_data)
+        
+        return HarnessResults(
+            schema_version="1.0.0",
+            schema_extensions=[],  # No experimental fields yet
+            run=run_info,
+            run_environment=run_info.runner,  # Also include at top level for compatibility
+            implementations=implementations,
+            tests=test_cases,
+            aggregates=aggregates
+        )
+    
+    def _print_summary(self, canonical_results: HarnessResults):
+        """Print enhanced summary with per-implementation and global statistics."""
+        total_tests = len(canonical_results.tests)
+        
+        # Track per-implementation statistics
+        impl_stats = {}
+        impl_failed_tests = {}  # Failed tests per implementation (when expected is available)
+        impl_skipped_tests = {}  # Skipped tests per implementation
+        
+        # Initialize stats for each implementation
+        for impl in canonical_results.implementations:
+            impl_id = impl.id
+            impl_stats[impl_id] = {"passed": 0, "failed": 0, "skipped": 0}
+            impl_failed_tests[impl_id] = []
+            impl_skipped_tests[impl_id] = []
+        
+        # Track global statistics
+        all_agree = 0  # All implementations agree (same SWHID or all PASS)
+        disagreements = 0  # Implementations disagree (different SWHIDs or mixed statuses)
+        fully_skipped = 0  # All implementations skipped
+        
+        # Process each test case
+        for test_case in canonical_results.tests:
+            has_expected = test_case.expected.swhid is not None
+            expected_swhid = test_case.expected.swhid
+            
+            # Get all results for this test
+            results = test_case.results
+            statuses = {r.status for r in results}
+            non_skipped_results = [r for r in results if r.status != "SKIPPED"]
+            swhids = {r.swhid for r in non_skipped_results if r.swhid is not None}
+            
+            # Check if all implementations skipped
+            if statuses == {"SKIPPED"}:
+                fully_skipped += 1
+                for result in results:
+                    impl_stats[result.implementation]["skipped"] += 1
+                    impl_skipped_tests[result.implementation].append(test_case.id)
+            else:
+                # Process each implementation's result
+                all_agree_on_this_test = True
+                non_skipped_statuses = {r.status for r in non_skipped_results}
+                
+                # Check if all non-skipped implementations agree (same SWHID)
+                if len(non_skipped_statuses) == 1 and "PASS" in non_skipped_statuses and len(swhids) <= 1:
+                    # All non-skipped implementations agree on SWHID
+                    pass  # all_agree_on_this_test remains True
+                else:
+                    # There's a disagreement
+                    all_agree_on_this_test = False
+                
+                # Count statistics per implementation
+                for result in results:
+                    if result.status == "SKIPPED":
+                        impl_stats[result.implementation]["skipped"] += 1
+                        impl_skipped_tests[result.implementation].append(test_case.id)
+                    elif result.status == "FAIL":
+                        impl_stats[result.implementation]["failed"] += 1
+                        if has_expected:
+                            impl_failed_tests[result.implementation].append(test_case.id)
+                        all_agree_on_this_test = False
+                    elif result.status == "PASS":
+                        # Check if it matches expected (if available)
+                        if has_expected and result.swhid != expected_swhid:
+                            # PASS but wrong SWHID - count as failure
+                            impl_stats[result.implementation]["failed"] += 1
+                            impl_failed_tests[result.implementation].append(test_case.id)
+                            all_agree_on_this_test = False
+                        else:
+                            # PASS and matches expected (or no expected) - count as pass
+                            impl_stats[result.implementation]["passed"] += 1
+                
+                # Update global counters
+                if all_agree_on_this_test:
+                    all_agree += 1
+                else:
+                    disagreements += 1
+        
+        # Print global summary
+        print(f"\nSummary: {all_agree}/{total_tests} all implementations agree, {disagreements}/{total_tests} disagreements, {fully_skipped} fully skipped")
+        
+        # Print per-implementation summaries
+        print("\nPer-implementation summary:")
+        for impl in sorted(canonical_results.implementations, key=lambda x: x.id):
+            impl_id = impl.id
+            stats = impl_stats[impl_id]
+            total = stats["passed"] + stats["failed"] + stats["skipped"]
+            print(f"  {impl_id}: {stats['passed']}/{total} passed, {stats['failed']} failed, {stats['skipped']} fully skipped")
+        
+        # Print failed tests per implementation (when expected is available)
+        print("\nFailed tests per implementation:")
+        for impl in sorted(canonical_results.implementations, key=lambda x: x.id):
+            impl_id = impl.id
+            failed = impl_failed_tests[impl_id]
+            if failed:
+                unique_failed = sorted(set(failed))
+                print(f"  {impl_id}: {len(unique_failed)} test(s)")
+                for test_id in unique_failed:
+                    print(f"    ✗ {test_id}")
+            else:
+                print(f"  {impl_id}: 0 failed")
+        
+        # Print skipped tests per implementation
+        if any(impl_skipped_tests.values()):
+            print("\nSkipped tests per implementation:")
+            for impl in sorted(canonical_results.implementations, key=lambda x: x.id):
+                impl_id = impl.id
+                skipped = impl_skipped_tests[impl_id]
+                if skipped:
+                    unique_skipped = sorted(set(skipped))
+                    print(f"  {impl_id}: {len(unique_skipped)} test(s)")
+                    for test_id in unique_skipped:
+                        print(f"    - {test_id}")
+    
+    def _get_implementation_git_sha(self, impl_name: str, impl_info: ImplementationInfo) -> Optional[str]:
+        """Try to get git SHA for an implementation."""
+        import subprocess
+        from pathlib import Path
+        
+        # Check if implementation directory exists
+        impl_dir = Path("implementations") / impl_name
+        if not impl_dir.exists():
+            return None
+        
+        try:
+            # Try to get git SHA from the implementation directory
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=impl_dir,
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()[:12]  # Short SHA
+        except Exception:
+            pass
+        
+        # Fallback: try to get from repo root if implementation is in this repo
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()[:12]
+        except Exception:
+            pass
+        
+        return None
+    
+    def _classify_error(self, error: str) -> tuple[str, str]:
+        """
+        Classify error string into ErrorCode and subtype.
+        
+        Returns:
+            Tuple of (error_code, subtype)
+        """
+        error_str = str(error).lower()
+        
+        # Timeout errors
+        if "timeout" in error_str or "timed out" in error_str:
+            return ("TIMEOUT", "wall_clock")
+        
+        # Resource limit errors
+        if "rss limit" in error_str or "memory" in error_str or "resource" in error_str:
+            return ("RESOURCE_LIMIT", "memory")
+        if "cpu" in error_str and "limit" in error_str:
+            return ("RESOURCE_LIMIT", "cpu")
+        
+        # I/O errors
+        if "file not found" in error_str or "no such file" in error_str:
+            return ("IO_ERROR", "file_not_found")
+        if "permission denied" in error_str or "permission" in error_str:
+            return ("IO_ERROR", "permission_denied")
+        if "json" in error_str and ("decode" in error_str or "invalid" in error_str):
+            return ("IO_ERROR", "protocol_violation")
+        if "process" in error_str and ("failed" in error_str or "crashed" in error_str):
+            return ("IO_ERROR", "process_crash")
+        
+        # Parse errors (invalid SWHID format)
+        if "invalid swhid" in error_str or "invalid format" in error_str:
+            return ("PARSE_ERROR", "format")
+        if "invalid" in error_str and ("scheme" in error_str or "version" in error_str):
+            return ("PARSE_ERROR", "syntax")
+        
+        # Validation errors
+        if "hash" in error_str and "match" in error_str:
+            return ("VALIDATION_ERROR", "hash_mismatch")
+        if "semantic" in error_str or "semantically invalid" in error_str:
+            return ("VALIDATION_ERROR", "semantic")
+        
+        # Mismatch errors (handled separately, but included for completeness)
+        if "mismatch" in error_str:
+            return ("MISMATCH_ERROR", "value")
+        
+        # Default: COMPUTE_ERROR (most common)
+        return ("COMPUTE_ERROR", "exception")
+
+    def print_summary(self, results: List[ComparisonResult]):
+        """Print a summary of test results."""
+        total_tests = len(results)
+        successful_tests = sum(1 for r in results if r.all_match)
+        failed_tests = total_tests - successful_tests
+        
+        print("\n" + "=" * 50)
+        print("SWHID Testing Harness Summary")
+        print("=" * 50)
+        print(f"Total Tests: {total_tests}")
+        print(f"Successful: {successful_tests}")
+        print(f"Failed: {failed_tests}")
+        print(f"Success Rate: {successful_tests/total_tests*100:.1f}%")
+        
+        if failed_tests > 0:
+            print("\nFailed Tests:")
+            for result in results:
+                if not result.all_match:
+                    print(f"\n  ✗ {result.payload_name}")
+                    
+                    # Show expected result if available
+                    if result.expected_swhid:
+                        print(f"    Expected: {result.expected_swhid}")
+                    
+                    # Group results by SWHID
+                    swhid_groups = {}
+                    failed_implementations = []
+                    
+                    for impl_name, test_result in result.results.items():
+                        if test_result.success:
+                            swhid = test_result.swhid
+                            if swhid not in swhid_groups:
+                                swhid_groups[swhid] = []
+                            swhid_groups[swhid].append(impl_name)
+                        else:
+                            failed_implementations.append((impl_name, test_result.error))
+                    
+                    # Show SWHID groups
+                    if len(swhid_groups) > 1:
+                        print(f"    Found {len(swhid_groups)} different SWHID groups:")
+                        for i, (swhid, impls) in enumerate(swhid_groups.items(), 1):
+                            print(f"      Group {i}: {swhid}")
+                            print(f"        Implementations: {', '.join(impls)}")
+                    elif len(swhid_groups) == 1:
+                        swhid = list(swhid_groups.keys())[0]
+                        impls = list(swhid_groups.values())[0]
+                        print(f"    All implementations agree: {swhid}")
+                        print(f"      Implementations: {', '.join(impls)}")
+                        if result.expected_swhid and swhid != result.expected_swhid:
+                            print(f"      But expected: {result.expected_swhid}")
+                    
+                    # Show failed implementations
+                    if failed_implementations:
+                        print(f"    Failed implementations:")
+                        for impl_name, error in failed_implementations:
+                            print(f"      {impl_name}: {error}")
+        
+        print("=" * 50)
+
+def main():
+    parser = argparse.ArgumentParser(description="SWHID Testing Harness")
+    parser.add_argument("--impl", nargs="*", help="Specific implementations to test (comma-separated or space-separated)")
+    parser.add_argument("--category", nargs="*", help="Specific categories to test (comma-separated or space-separated)")
+    parser.add_argument("--config", default="config.yaml", help="Configuration file")
+    parser.add_argument("--generate-expected", action="store_true", 
+                       help="Generate expected results using reference implementation")
+    parser.add_argument("--output-format", choices=["canonical", "ndjson"], default="canonical",
+                       help="Output format for results (canonical JSON or NDJSON)")
+    parser.add_argument("--reference-impl", default="python",
+                       help="Reference implementation for generating expected results")
+    parser.add_argument("--dashboard-output", help="Save dashboard results to file")
+    parser.add_argument("--branch", default="main", help="Git branch name")
+    parser.add_argument("--commit", default="unknown", help="Git commit hash")
+    
+    # New CLI options (P1)
+    parser.add_argument("--list-impls", action="store_true",
+                       help="List all available implementations and exit")
+    parser.add_argument("--list-payloads", action="store_true",
+                       help="List all test payloads and exit")
+    parser.add_argument("--fail-fast", action="store_true",
+                       help="Stop on first failure")
+    parser.add_argument("--summary-only", action="store_true",
+                       help="Show only summary, not detailed results")
+    parser.add_argument("--seed", type=int, help="Random seed for deterministic ordering")
+    parser.add_argument("--deep", action="store_true",
+                       help="Run deep test suite including property-based tests")
+    
+    args = parser.parse_args()
+    
+    harness = SwhidHarness(args.config)
+    
+    # Handle list commands
+    if args.list_impls:
+        impls = harness.discovery.list_available_implementations()
+        print("Available implementations:")
+        for impl_name in sorted(impls):
+            impl = harness.discovery.get_implementation(impl_name)
+            if impl:
+                info = impl.get_info()
+                available = "✓" if impl.is_available() else "✗"
+                print(f"  {available} {impl_name}: {info.description} (v{info.version})")
+        return
+    
+    if args.list_payloads:
+        print("Available test payloads:")
+        for category, payloads in sorted(harness.config["payloads"].items()):
+            print(f"\n  {category}:")
+            for payload in sorted(payloads, key=lambda p: p.get("name", "")):
+                name = payload.get("name", "unnamed")
+                path = payload.get("path", "")
+                expected = payload.get("expected_swhid")
+                status = "✓" if expected else "○"
+                print(f"    {status} {name}: {path}")
+        return
+    
+    if args.generate_expected:
+        harness.generate_expected_results(args.reference_impl)
+    else:
+        # Set random seed if provided
+        if args.seed is not None:
+            import random
+            random.seed(args.seed)
+        
+        # Parse comma-separated or space-separated arguments
+        impl_list = None
+        if args.impl:
+            # args.impl is a list (from nargs="*")
+            # If it's a single element with commas, split it; otherwise use as-is
+            if len(args.impl) == 1 and ',' in args.impl[0]:
+                impl_list = [i.strip() for i in args.impl[0].split(',')]
+            else:
+                impl_list = args.impl
+        
+        category_list = None
+        if args.category:
+            # args.category is a list (from nargs="*")
+            # If it's a single element with commas, split it; otherwise use as-is
+            if len(args.category) == 1 and ',' in args.category[0]:
+                category_list = [c.strip() for c in args.category[0].split(',')]
+            else:
+                category_list = args.category
+        
+        results = harness.run_tests(impl_list, category_list)
+        
+        # Check for failures if fail-fast
+        if args.fail_fast:
+            failed = [r for r in results if not r.all_match]
+            if failed:
+                logger.error(f"Fail-fast: Stopping after first failure")
+                # Exit with code 1 for mismatch
+                sys.exit(1)
+        
+        # Generate canonical results
+        canonical_results = harness.get_canonical_results(results, args.branch, args.commit)
+        
+        if args.summary_only:
+            harness._print_summary(canonical_results)
+        elif args.dashboard_output:
+            if args.output_format == "ndjson":
+                # Write NDJSON format (one JSON object per line)
+                with open(args.dashboard_output, 'w') as f:
+                    # Write run info
+                    f.write(json.dumps({"type": "run_info", **canonical_results.run.model_dump(mode="json")}) + "\n")
+                    # Write implementations
+                    for impl in canonical_results.implementations:
+                        f.write(json.dumps({"type": "implementation", **impl.model_dump(mode="json")}) + "\n")
+                    # Write test cases
+                    for test in canonical_results.tests:
+                        f.write(json.dumps({"type": "test_case", **test.model_dump(mode="json")}) + "\n")
+                    # Write aggregates
+                    f.write(json.dumps({"type": "aggregates", **canonical_results.aggregates.model_dump(mode="json")}) + "\n")
+                print(f"NDJSON results saved to {args.dashboard_output}")
+            else:
+                # Write canonical JSON format
+                with open(args.dashboard_output, 'w') as f:
+                    json.dump(canonical_results.model_dump(mode="json"), f, indent=2)
+                print(f"Canonical results saved to {args.dashboard_output}")
+            
+            # Always show summary when saving to file
+            harness._print_summary(canonical_results)
+        else:
+            if args.output_format == "ndjson":
+                # Print NDJSON to stdout
+                print(json.dumps({"type": "run_info", **canonical_results.run.model_dump(mode="json")}))
+                for impl in canonical_results.implementations:
+                    print(json.dumps({"type": "implementation", **impl.model_dump(mode="json")}))
+                for test in canonical_results.tests:
+                    print(json.dumps({"type": "test_case", **test.model_dump(mode="json")}))
+                print(json.dumps({"type": "aggregates", **canonical_results.aggregates.model_dump(mode="json")}))
+            else:
+                print(json.dumps(canonical_results.model_dump(mode="json"), indent=2))
+        
+        # Exit code: 0=all pass, 1=mismatch, 2=error
+        failed = sum(1 for r in results if not r.all_match)
+        if failed > 0:
+            sys.exit(1)  # Mismatch
+        sys.exit(0)  # All pass
+
+if __name__ == "__main__":
+    main()

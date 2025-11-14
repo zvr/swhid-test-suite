@@ -1,0 +1,2 @@
+Regular file with default permissions
+

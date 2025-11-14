@@ -1,0 +1,3 @@
+"""
+Rust SWHID Implementation Plugin
+"""

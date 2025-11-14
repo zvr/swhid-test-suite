@@ -1,0 +1,2 @@
+Write-only file (unusual but testable)
+

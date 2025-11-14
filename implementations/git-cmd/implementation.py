@@ -1,0 +1,156 @@
+"""
+Git Command SWHID Implementation Plugin
+
+This module provides an interface to Git-based SWHID computation using git commands.
+"""
+
+import os
+import sys
+import subprocess
+import tempfile
+import shutil
+from pathlib import Path
+from typing import Optional
+
+from harness.plugins.base import SwhidImplementation, ImplementationInfo, ImplementationCapabilities
+
+class Implementation(SwhidImplementation):
+    """Git command SWHID implementation plugin."""
+    
+    def get_info(self) -> ImplementationInfo:
+        """Return implementation metadata."""
+        return ImplementationInfo(
+            name="git-cmd",
+            version="1.0.0",
+            language="shell",
+            description="Git SWHID implementation using git command directly",
+            dependencies=["git"]
+        )
+    
+    def is_available(self) -> bool:
+        """Check if Git command implementation is available."""
+        try:
+            result = subprocess.run(
+                ["git", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return False
+    
+    def get_capabilities(self) -> ImplementationCapabilities:
+        """Return implementation capabilities."""
+        return ImplementationCapabilities(
+            supported_types=["cnt", "dir", "rev", "rel", "snp"],
+            supported_qualifiers=["origin", "visit", "anchor", "path", "lines"],
+            api_version="1.0",
+            max_payload_size_mb=1000,
+            supports_unicode=True,
+            supports_percent_encoding=True
+        )
+    
+    def compute_swhid(self, payload_path: str, obj_type: Optional[str] = None) -> str:
+        """Compute SWHID using Git command directly."""
+        payload_path = os.path.abspath(payload_path)
+        
+        if not os.path.exists(payload_path):
+            raise FileNotFoundError(f"Payload not found: {payload_path}")
+        
+        # Auto-detect object type if not provided
+        if obj_type is None:
+            obj_type = self.detect_object_type(payload_path)
+        
+        # Skip snapshot objects as Git doesn't support them
+        if obj_type == "snapshot":
+            raise NotImplementedError("Git doesn't support snapshot objects")
+        
+        try:
+            if obj_type == "content":
+                return self._compute_content_swhid(payload_path)
+            elif obj_type == "directory":
+                return self._compute_directory_swhid(payload_path)
+            elif obj_type == "revision":
+                return self._compute_revision_swhid(payload_path)
+            elif obj_type == "release":
+                return self._compute_release_swhid(payload_path)
+            else:
+                raise ValueError(f"Unsupported object type: {obj_type}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to compute Git SWHID: {e}")
+    
+    def _compute_content_swhid(self, file_path: str) -> str:
+        """Compute content SWHID using git hash-object command."""
+        try:
+            result = subprocess.run(
+                ["git", "hash-object", file_path],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            blob_id = result.stdout.strip()
+            return f"swh:1:cnt:{blob_id}"
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"git hash-object failed: {e}")
+    
+    def _compute_directory_swhid(self, dir_path: str) -> str:
+        """Compute directory SWHID using git commands."""
+        # Create a temporary Git repository
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_path = os.path.join(temp_dir, "repo")
+            os.makedirs(repo_path)
+            
+            # Initialize Git repository
+            subprocess.run(["git", "init"], cwd=repo_path, check=True, 
+                         capture_output=True)
+            
+            # Copy the directory contents maintaining the structure
+            # Use a target subdirectory to avoid conflicts with .git
+            target_path = os.path.join(repo_path, "target")
+            if os.path.isdir(dir_path):
+                # Copy the entire directory structure, preserving symlinks
+                shutil.copytree(dir_path, target_path, symlinks=True)
+            else:
+                # If it's a file, create target directory and copy file
+                os.makedirs(target_path)
+                shutil.copy2(dir_path, target_path)
+            
+            # Move contents from target to repo root (Git tree is for repo root)
+            # We need to move the contents, not the directory itself
+            for item in os.listdir(target_path):
+                src = os.path.join(target_path, item)
+                dst = os.path.join(repo_path, item)
+                if os.path.isdir(src):
+                    shutil.move(src, dst)
+                else:
+                    shutil.move(src, dst)
+            os.rmdir(target_path)
+            
+            # Add all files to Git (this will handle symlinks correctly)
+            subprocess.run(["git", "add", "."], cwd=repo_path, check=True,
+                         capture_output=True)
+            
+            # Get the tree hash for the root directory
+            result = subprocess.run(
+                ["git", "write-tree"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            tree_id = result.stdout.strip()
+            
+            return f"swh:1:dir:{tree_id}"
+    
+    def _compute_revision_swhid(self, repo_path: str) -> str:
+        """Compute revision SWHID using Git commit hash."""
+        # This would require parsing Git repository and finding the HEAD commit
+        # For now, we'll skip this as it's complex and not needed for basic testing
+        raise NotImplementedError("Git revision SWHID computation not implemented")
+    
+    def _compute_release_swhid(self, repo_path: str) -> str:
+        """Compute release SWHID using Git tag hash."""
+        # This would require parsing Git repository and finding tags
+        # For now, we'll skip this as it's complex and not needed for basic testing
+        raise NotImplementedError("Git release SWHID computation not implemented")

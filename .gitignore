@@ -1,0 +1,83 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Performance test results
+performance_results.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Test results
+results/
+test_results/
+*.json
+!config.yaml
+!pytest.ini
+!package*.json
+
+# Legacy/unused directories
+fixtures/
+test_results/
+
+# Review artifacts (generated files)
+swhid-harness-review.tar.gz
+
+# Dashboard results (future feature)
+dashboard_results.json
+site/data/runs/
+
+# Legacy files (removed)
+runners/
+test_examples/
+fix_implementations.py
+*.zip
+
+# Local documentation (implementation-specific)
+.local/
+
+# Python testing
+.pytest_cache/
+htmlcov/
+
+# Temporary files
+=*
+*.zip
+swhid-harness-review-v2.tar.gz

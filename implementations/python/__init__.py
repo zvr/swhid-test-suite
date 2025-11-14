@@ -1,0 +1,3 @@
+"""
+Python SWHID Implementation Plugin
+"""

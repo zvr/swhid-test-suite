@@ -1,0 +1,68 @@
+# Invalid SWHID syntax test cases
+# Each entry should be rejected or normalized by implementations
+
+test_cases:
+  - name: wrong_scheme
+    swhid: "ssh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    expected_error: PARSE_ERROR
+    description: "Wrong scheme (ssh instead of swh)"
+  
+  - name: wrong_version
+    swhid: "swh:2:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    expected_error: PARSE_ERROR
+    description: "Wrong version (2 instead of 1)"
+  
+  - name: unknown_object_type
+    swhid: "swh:1:xyz:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    expected_error: PARSE_ERROR
+    description: "Unknown object type (xyz)"
+  
+  - name: short_hash
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5"
+    expected_error: NORMALIZE_ERROR
+    description: "Hash too short (38 chars instead of 40)"
+  
+  - name: long_hash
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391a"
+    expected_error: NORMALIZE_ERROR
+    description: "Hash too long (41 chars instead of 40)"
+  
+  - name: invalid_hash_chars
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c539g"
+    expected_error: NORMALIZE_ERROR
+    description: "Invalid hex character (g instead of 0-9a-f)"
+  
+  - name: uppercase_hash
+    swhid: "swh:1:cnt:E69DE29BB2D1D6434B8B29AE775AD8C2E48C5391"
+    expected_error: NORMALIZE_ERROR
+    description: "Uppercase hash (should be normalized to lowercase)"
+  
+  - name: duplicate_qualifier
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391;path=file.txt;path=other.txt"
+    expected_error: VALIDATION_ERROR
+    description: "Duplicate path qualifier"
+  
+  - name: unescaped_semicolon
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391;path=file;name.txt"
+    expected_error: PARSE_ERROR
+    description: "Unescaped semicolon in qualifier value"
+  
+  - name: bad_percent_encoding
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391;path=file%GZname.txt"
+    expected_error: PARSE_ERROR
+    description: "Invalid percent encoding (%GZ)"
+  
+  - name: invalid_lines_range
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391;lines=3-2"
+    expected_error: VALIDATION_ERROR
+    description: "Invalid lines range (end < start)"
+  
+  - name: lines_zero
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391;lines=0"
+    expected_error: VALIDATION_ERROR
+    description: "Lines qualifier with zero (invalid)"
+  
+  - name: non_numeric_lines
+    swhid: "swh:1:cnt:e69de29bb2d1d6434b8b29ae775ad8c2e48c5391;lines=abc"
+    expected_error: PARSE_ERROR
+    description: "Non-numeric lines qualifier"
