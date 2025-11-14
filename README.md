@@ -26,7 +26,7 @@ swhid-harness --category content,directory,git
 ### Validate Results
 
 ```bash
-python -m harness.models results.json
+python3 -m harness.models results.json
 ```
 
 ## Project Structure

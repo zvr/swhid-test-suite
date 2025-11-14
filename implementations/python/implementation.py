@@ -23,7 +23,7 @@ class Implementation(SwhidImplementation):
             version="1.0.0",
             language="python",
             description="Python SWHID implementation via swh.model.cli",
-            test_command="python -m swh.model.cli --help",
+            test_command="python3 -m swh.model.cli --help",
             dependencies=["swh.model"]
         )
     
@@ -32,7 +32,7 @@ class Implementation(SwhidImplementation):
         try:
             # Check if swh.model is available
             result = subprocess.run(
-                ["python", "-c", "import swh.model"],
+                ["python3", "-c", "import swh.model"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -42,7 +42,7 @@ class Implementation(SwhidImplementation):
             
             # Check if CLI is available
             result = subprocess.run(
-                ["python", "-m", "swh.model.cli", "--help"],
+                ["python3", "-m", "swh.model.cli", "--help"],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -66,7 +66,7 @@ class Implementation(SwhidImplementation):
     def compute_swhid(self, payload_path: str, obj_type: Optional[str] = None) -> str:
         """Compute SWHID for a payload using the Python implementation."""
         # Build the command
-        cmd = ["python", "-m", "swh.model.cli"]
+        cmd = ["python3", "-m", "swh.model.cli"]
         
         # Add object type if specified
         if obj_type and obj_type != "auto":
@@ -77,7 +77,7 @@ class Implementation(SwhidImplementation):
             obj_type = self.detect_object_type(payload_path)
             if obj_type and obj_type != "auto":
                 # Reset and add again to ensure correct flag ordering
-                cmd = ["python", "-m", "swh.model.cli", "--type", obj_type]
+                cmd = ["python3", "-m", "swh.model.cli", "--type", obj_type]
         
         # Add the payload path
         cmd.append(payload_path)
