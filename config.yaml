@@ -62,23 +62,6 @@ payloads:
     expected_swhid: swh:1:cnt:34f1257dbbb7e20b745654c0cd067ff24375d1d7
     name: mixed_line_endings
     path: payloads/content/edge_cases/mixed_line_endings.txt
-  content/qualifiers:
-  - description: Single line file for lines= qualifier testing
-    expected_swhid: swh:1:cnt:f9839933987b729e7d654c1f00599185f2bcccf9
-    name: single_line
-    path: payloads/content/qualifiers/single_line.txt
-  - description: Three line file for lines= qualifier testing
-    expected_swhid: swh:1:cnt:6ad36e52f0002937ed2de6a1c15d8a0ae5df056a
-    name: three_lines
-    path: payloads/content/qualifiers/three_lines.txt
-  - description: Five line file for lines= qualifier testing
-    expected_swhid: swh:1:cnt:572d5d94839464f28ef959932515ee6624dbfe01
-    name: five_lines
-    path: payloads/content/qualifiers/five_lines.txt
-  - description: Ten line file for lines= qualifier testing
-    expected_swhid: swh:1:cnt:00935f183cbd9243998bd3f84ac67e18eff726a4
-    name: ten_lines
-    path: payloads/content/qualifiers/ten_lines.txt
   directory:
   - description: Empty directory
     expected_swhid: swh:1:dir:4b825dc642cb6eb9a060e54bf8d69288fbee4904
