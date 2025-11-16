@@ -151,9 +151,6 @@ jobs:
         with:
           name: upstream-state
           path: previous-state
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: upstream-state
-          if-no-artifact-found: ignore
         continue-on-error: true
       
       - name: Check for upstream changes
