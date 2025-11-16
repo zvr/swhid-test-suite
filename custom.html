@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SWHID Test Results</title>
+<style>
+
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        th {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px;
+            text-align: left;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        td {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            font-size: 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 150px;
+            min-width: 80px;
+        }
+        td.test-name {
+            font-weight: bold;
+            background-color: #f9f9f9;
+            max-width: 300px;
+        }
+        td.expected {
+            font-family: monospace;
+            font-size: 9px;
+            max-width: 200px;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .legend {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .legend-item {
+            display: inline-block;
+            margin: 5px 15px;
+        }
+        .color-box {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 1px solid #ccc;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
+        .tooltip {
+            position: relative;
+            cursor: help;
+        }
+        .tooltip:hover::after {
+            content: attr(title);
+            position: absolute;
+            left: 100%;
+            top: 0;
+            background-color: #333;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            white-space: pre-wrap;
+            z-index: 1000;
+            min-width: 200px;
+            font-size: 11px;
+        }
+    
+</style>
+</head>
+<body>
+<h1>SWHID Test Results</h1>
+<div class="legend">
+<strong>Legend:</strong>
+<div class="legend-item"><span class="color-box" style="background-color: #888888;"></span>SKIP - Test was skipped</div>
+<div class="legend-item"><span class="color-box" style="background-color: #90EE90;"></span>CONFORMANT - PASS with matching expected SWHID</div>
+<div class="legend-item"><span class="color-box" style="background-color: #FF6B6B;"></span>NON-CONFORMANT - Wrong SWHID or FAIL with expected</div>
+<div class="legend-item"><span class="color-box" style="background-color: #87CEEB;"></span>EXECUTED_OK - PASS but no expected to compare</div>
+<div class="legend-item"><span class="color-box" style="background-color: #FFD700;"></span>EXECUTED_ERROR - FAIL without expected</div>
+</div>
+<table>
+<thead>
+<tr>
+<th>Test Case</th>
+<th>Expected SWHID</th>
+<th>git</th>
+<th>git-cmd</th>
+<th>pygit2</th>
+<th>python</th>
+<th>rust</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="test-name">branch_ordering</td>
+<td class="expected">swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #90EE90;" title="Status: CONFORMANT
+SWHID: swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36
+Expected: swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36"></td>
+<td class="tooltip" style="background-color: #FF6B6B;" title="Status: NON-CONFORMANT
+SWHID: swh:1:snp:6af89977bb9778bff542886fc872892057c40ea7
+Expected: swh:1:snp:e44a647204ef944dd0fd28302a0d65124b93cd36
+Error: MISMATCH_ERROR: SWHID mismatch">swh:1:snp:6af89977bb9778bff542886fc872892057c40ea7</td>
+</tr>
+<tr>
+<td class="test-name">complex_merges</td>
+<td class="expected">swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #90EE90;" title="Status: CONFORMANT
+SWHID: swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4
+Expected: swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4"></td>
+<td class="tooltip" style="background-color: #FF6B6B;" title="Status: NON-CONFORMANT
+SWHID: swh:1:snp:007da37517ac622c72faffd68b6338f8b44e57cd
+Expected: swh:1:snp:604524a5decb4c927258eb4d9f5a121c48218bd4
+Error: MISMATCH_ERROR: SWHID mismatch">swh:1:snp:007da37517ac622c72faffd68b6338f8b44e57cd</td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_branch_develop</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #FFD700;" title="Status: EXECUTED_ERROR
+Error: COMPUTE_ERROR: Failed to compute Git SWHID: Could not resolve short SHA &#x27;develop&#x27;">COMPUTE_ERROR: Failed to compute Git SWHID: Could </td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:5e8a55e005e0003cd976ac876b2a598bf0d91362"></td>
+<td class="tooltip" style="background-color: #FFD700;" title="Status: EXECUTED_ERROR
+Error: COMPUTE_ERROR: Failed to compute Git SWHID: Could not resolve commit &#x27;develop&#x27;: Could not resolve short SHA &#x27;develop&#x27;">COMPUTE_ERROR: Failed to compute Git SWHID: Could </td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:f71741a120d98e47080c3dda3f3fc9cc8496eb9b"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_branch_feature-a</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:870dcb724e95453ab9dd2f4a58f98aeb0dcb7764"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:870dcb724e95453ab9dd2f4a58f98aeb0dcb7764"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:870dcb724e95453ab9dd2f4a58f98aeb0dcb7764"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:47f0e7d194be219cedbf513a370469a72d941a7f"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_branch_feature-b</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:229740cdc7665b5718e34e04a59fd9e981f2c149"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:229740cdc7665b5718e34e04a59fd9e981f2c149"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:229740cdc7665b5718e34e04a59fd9e981f2c149"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:0c613e9bb38be853505aa7e44d91d9f746907378"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_branch_hotfix</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:bfe454d11532e851d36ac5c2c014f12a19c9f720"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:bfe454d11532e851d36ac5c2c014f12a19c9f720"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:bfe454d11532e851d36ac5c2c014f12a19c9f720"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:e685cfe42940552b757dc8476b2a91204d00ba6c"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_branch_main</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:997cc01b55bd38cbcc49f113c9f796e528559adf"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:997cc01b55bd38cbcc49f113c9f796e528559adf"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:997cc01b55bd38cbcc49f113c9f796e528559adf"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:168b909d160d44771999f031729f4048900a6550"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_tag_v1.0.0</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:5286f13487f495993f96ae05b33d10f5f93b82f4"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:5286f13487f495993f96ae05b33d10f5f93b82f4"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:5286f13487f495993f96ae05b33d10f5f93b82f4"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:38e0b95b302dcbc4bd55c5a2666d54ee15df1b84"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_tag_v1.0.1</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:bce2af7aab2b64d3198976a83cefffcd6f5b8f54"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:bce2af7aab2b64d3198976a83cefffcd6f5b8f54"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:bce2af7aab2b64d3198976a83cefffcd6f5b8f54"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:a8e1a39d8a764f766f47d424ac68a152db6050be"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_tag_v1.1.0</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:00f5b371d166cff902716f88c59e97eb21d18a7a"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:00f5b371d166cff902716f88c59e97eb21d18a7a"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:00f5b371d166cff902716f88c59e97eb21d18a7a"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:6ca69b71710e85844017bb2a84da268e1f962934"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_tag_v2.0.0</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:eb40be8808a4c33f3d3daab634344b673996a49f"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:eb40be8808a4c33f3d3daab634344b673996a49f"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:eb40be8808a4c33f3d3daab634344b673996a49f"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:9f98583e5ae332ce0d4e3afb953878fc82fa96b6"></td>
+</tr>
+<tr>
+<td class="test-name">comprehensive_tag_v2.1.0</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:edaf91f706742fcb19591f59b5397b0a7a09ac39"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:edaf91f706742fcb19591f59b5397b0a7a09ac39"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:edaf91f706742fcb19591f59b5397b0a7a09ac39"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support release object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rel:b5271cff087e0b87508df9df233739b6d171ef9b"></td>
+</tr>
+<tr>
+<td class="test-name">merge_commits</td>
+<td class="expected">swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #90EE90;" title="Status: CONFORMANT
+SWHID: swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6
+Expected: swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6"></td>
+<td class="tooltip" style="background-color: #FF6B6B;" title="Status: NON-CONFORMANT
+SWHID: swh:1:snp:6349a0fabe9bcea2a4c4712637cf4f91880e0bc0
+Expected: swh:1:snp:5c9c3c9be880d0ac89707304017006716d6749a6
+Error: MISMATCH_ERROR: SWHID mismatch">swh:1:snp:6349a0fabe9bcea2a4c4712637cf4f91880e0bc0</td>
+</tr>
+<tr>
+<td class="test-name">signed_releases</td>
+<td class="expected">swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #90EE90;" title="Status: CONFORMANT
+SWHID: swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4
+Expected: swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4"></td>
+<td class="tooltip" style="background-color: #FF6B6B;" title="Status: NON-CONFORMANT
+SWHID: swh:1:snp:f4659c64c308b26b86f6fbff9a7b85a115b0cfa3
+Expected: swh:1:snp:1a358894eaa5f6f9727168d9280e992af1a076b4
+Error: MISMATCH_ERROR: SWHID mismatch">swh:1:snp:f4659c64c308b26b86f6fbff9a7b85a115b0cfa3</td>
+</tr>
+<tr>
+<td class="test-name">signed_revisions_branch_main</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:8a1241cc9d81178d7c1c29201354b2cb309601fe"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:8a1241cc9d81178d7c1c29201354b2cb309601fe"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:8a1241cc9d81178d7c1c29201354b2cb309601fe"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:70f4bd1e02861abe81ca5d3d0ca4898367db7f78"></td>
+</tr>
+<tr>
+<td class="test-name">signed_revisions_branch_signed-feature</td>
+<td class="expected"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:8a1241cc9d81178d7c1c29201354b2cb309601fe"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:8a1241cc9d81178d7c1c29201354b2cb309601fe"></td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:8a1241cc9d81178d7c1c29201354b2cb309601fe"></td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Error: VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type">VALIDATION_ERROR: Object type not supported: Python implementation doesn&#x27;t support revision object type</td>
+<td class="tooltip" style="background-color: #87CEEB;" title="Status: EXECUTED_OK
+SWHID: swh:1:rev:70f4bd1e02861abe81ca5d3d0ca4898367db7f78"></td>
+</tr>
+<tr>
+<td class="test-name">simple_revisions</td>
+<td class="expected">swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #90EE90;" title="Status: CONFORMANT
+SWHID: swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92
+Expected: swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92"></td>
+<td class="tooltip" style="background-color: #FF6B6B;" title="Status: NON-CONFORMANT
+SWHID: swh:1:snp:4beb495cdf279920339b8400a8aa0a1bfd6ad3e3
+Expected: swh:1:snp:2f1450c1be7a6945b69d2c3724ac30a3be025e92
+Error: MISMATCH_ERROR: SWHID mismatch">swh:1:snp:4beb495cdf279920339b8400a8aa0a1bfd6ad3e3</td>
+</tr>
+<tr>
+<td class="test-name">tag_types</td>
+<td class="expected">swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #888888;" title="Status: SKIP
+Expected: swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9
+Error: VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects">VALIDATION_ERROR: Object type not supported: Git doesn&#x27;t support snapshot objects</td>
+<td class="tooltip" style="background-color: #90EE90;" title="Status: CONFORMANT
+SWHID: swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9
+Expected: swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9"></td>
+<td class="tooltip" style="background-color: #FF6B6B;" title="Status: NON-CONFORMANT
+SWHID: swh:1:snp:ee1b5ffe457469e0cd4192ad3a9a99cb24fd872e
+Expected: swh:1:snp:98a720761e59ff1704a84b38e0f3f683a6c2d5d9
+Error: MISMATCH_ERROR: SWHID mismatch">swh:1:snp:ee1b5ffe457469e0cd4192ad3a9a99cb24fd872e</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>
