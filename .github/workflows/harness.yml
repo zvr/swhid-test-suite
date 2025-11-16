@@ -255,7 +255,7 @@ jobs:
 
   performance-baseline:
     needs: test
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     
     steps:
