@@ -96,6 +96,9 @@ payloads/git-repository/complex_merges/.git/
 payloads/git-repository/*/.git/
 payloads/git-repository/*/
 
-# Ignore synthetic git repos created by harness
+# Ignore synthetic git repos created by harness (dynamically generated)
+# These are created at runtime and should not be tracked
 payloads/git/synthetic/
 payloads/git/test-repo/
+# Pattern to catch any other dynamically created repos in payloads/git/
+payloads/git/*/.git/
