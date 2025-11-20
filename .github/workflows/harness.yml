@@ -375,7 +375,7 @@ jobs:
         shell: bash
         run: |
           if [ -f results.json ]; then
-            python scripts/view_results.py results.json results.html || echo "Warning: Could not generate HTML table"
+            python scripts/view_results.py results.json --output results.html || echo "Warning: Could not generate HTML table"
             if [ -f results.html ]; then
               echo "✅ HTML results table generated: results.html" >> $GITHUB_STEP_SUMMARY
             fi
