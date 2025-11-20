@@ -95,24 +95,45 @@ jobs:
             # Use HTTPS with token if available (for private repos)
             if [[ "$SWHID_RS_REPO" == https://* ]]; then
               # Force HTTPS by disabling SSH and avoiding system Git configs
+              echo "=== Debug: Git configuration before clone ==="
+              echo "Git version: $(git --version)"
+              echo "GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-<unset>}"
+              echo "GIT_CONFIG_NOSYSTEM: ${GIT_CONFIG_NOSYSTEM:-<unset>}"
+              echo "SSH key exists: $([ -f ~/.ssh/id_rsa ] && echo 'yes' || echo 'no')"
+              git config --global --list 2>/dev/null | grep -E "(url|ssh)" || echo "No global URL/SSH configs"
+              git config --system --list 2>/dev/null | grep -E "(url|ssh)" || echo "No system URL/SSH configs"
+              echo "Testing URL parsing..."
+              echo "Original URL: $SWHID_RS_REPO"
+              echo "=== End debug ==="
+              
+              # Completely disable SSH for this operation
               unset GIT_SSH_COMMAND
+              unset GIT_SSH
               export GIT_CONFIG_NOSYSTEM=1
+              export GIT_SSH_VARIANT=simple
+              export GIT_TERMINAL_PROMPT=0
+              
               if [ -n "$SWHID_RS_TOKEN" ]; then
                 # Use dedicated token for private repo access
                 REPO_URL="${SWHID_RS_REPO/https:\/\//https:\/\/$SWHID_RS_TOKEN@}"
                 echo "Using token for private repository access"
-                git clone "$REPO_URL" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
+                echo "Repository URL (masked): ${REPO_URL/https:\/\/[^@]*@/https:\/\/***@}"
+                echo "Attempting clone with explicit HTTPS..."
+                GIT_SSH_COMMAND="" GIT_CONFIG_NOSYSTEM=1 git -c url.https://.insteadOf=git@github.com: -c url.https://github.com/.insteadOf=git@github.com: clone "$REPO_URL" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
                 CLONE_EXIT_CODE=${PIPESTATUS[0]}
               elif [ -n "${{ secrets.GITHUB_TOKEN }}" ]; then
                 # Fallback to GITHUB_TOKEN if available
                 REPO_URL="${SWHID_RS_REPO/https:\/\//https:\/\/${{ secrets.GITHUB_TOKEN }}@}"
                 echo "Using GITHUB_TOKEN for repository access"
-                git clone "$REPO_URL" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
+                echo "Repository URL (masked): ${REPO_URL/https:\/\/[^@]*@/https:\/\/***@}"
+                echo "Attempting clone with explicit HTTPS..."
+                GIT_SSH_COMMAND="" GIT_CONFIG_NOSYSTEM=1 git -c url.https://.insteadOf=git@github.com: -c url.https://github.com/.insteadOf=git@github.com: clone "$REPO_URL" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
                 CLONE_EXIT_CODE=${PIPESTATUS[0]}
               else
                 # Try public access (will fail for private repos)
                 echo "No token available, attempting public access"
-                git clone "$SWHID_RS_REPO" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
+                echo "Attempting clone with explicit HTTPS..."
+                GIT_SSH_COMMAND="" GIT_CONFIG_NOSYSTEM=1 git -c url.https://.insteadOf=git@github.com: -c url.https://github.com/.insteadOf=git@github.com: clone "$SWHID_RS_REPO" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
                 CLONE_EXIT_CODE=${PIPESTATUS[0]}
               fi
             else
