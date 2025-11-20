@@ -52,6 +52,7 @@ jobs:
           pip install -e .[dev] psutil
       
       - name: Install Software Heritage Python tools
+        shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
             # swh.core has test data files with colons in names, which Windows doesn't support
@@ -447,6 +448,7 @@ jobs:
           pip install -e .[dev]
       
       - name: Merge results
+        shell: bash
         run: |
           # Create a simple HTML summary if merge_results.py doesn't exist
           if [ -f tools/merge_results.py ]; then
