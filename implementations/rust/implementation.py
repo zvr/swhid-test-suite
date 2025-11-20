@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 class Implementation(SwhidImplementation):
     """Rust SWHID implementation plugin."""
     
+    def __init__(self) -> None:
+        self._git_build_ready = False
+        self._default_build_ready = False
+        self._binary_path_cache: Optional[str] = None
+    
     def get_info(self) -> ImplementationInfo:
         """Return implementation metadata."""
         return ImplementationInfo(
@@ -73,25 +78,15 @@ class Implementation(SwhidImplementation):
             supports_percent_encoding=True
         )
     
-    def _ensure_binary_built(self, project_root: str, needs_git: bool = False) -> str:
-        """Ensure the Rust binary is built and return its path.
-        
-        Args:
-            project_root: Path to the Rust project root
-            needs_git: Whether the binary needs to be built with git feature
-        """
+    def _build_binary(self, project_root: str, use_git_feature: bool) -> str:
+        """Build the Rust binary, optionally enabling the git feature."""
         binary_path = Path(project_root) / "target" / "release" / "swhid"
-        
-        # Check if binary exists
-        if binary_path.exists() and binary_path.is_file():
-            return str(binary_path)
-        
-        # Binary doesn't exist, build it
-        logger.info(f"Building Rust binary at {project_root}...")
         build_cmd = ["cargo", "build", "--release"]
-        if needs_git:
-            # Need git feature for Git-related commands
+        if use_git_feature:
             build_cmd.extend(["--features", "git"])
+            logger.info("Building Rust binary with git feature enabled...")
+        else:
+            logger.info("Building Rust binary without git feature...")
         
         result = subprocess.run(
             build_cmd,
@@ -108,7 +103,31 @@ class Implementation(SwhidImplementation):
         if not binary_path.exists():
             raise RuntimeError(f"Binary not found after build: {binary_path}")
         
-        return str(binary_path)
+        # Cache binary path for reuse
+        self._binary_path_cache = str(binary_path)
+        return self._binary_path_cache
+
+    def _ensure_binary_built(self, project_root: str, needs_git: bool = False) -> str:
+        """Ensure the Rust binary is built (with git feature if needed) and return its path."""
+        binary_path = self._binary_path_cache or str(Path(project_root) / "target" / "release" / "swhid")
+        
+        # If git feature is required but we haven't built with it yet, build now
+        if needs_git and not self._git_build_ready:
+            binary_path = self._build_binary(project_root, use_git_feature=True)
+            self._git_build_ready = True
+            # Building with git feature also produces a usable binary for non-git operations
+            self._default_build_ready = True
+            return binary_path
+        
+        # If binary missing entirely or never built, build without git feature
+        if not Path(binary_path).exists() or not self._default_build_ready:
+            binary_path = self._build_binary(project_root, use_git_feature=needs_git)
+            self._default_build_ready = True
+            if needs_git:
+                self._git_build_ready = True
+            return binary_path
+        
+        return binary_path
     
     def compute_swhid(self, payload_path: str, obj_type: Optional[str] = None,
                      commit: Optional[str] = None, tag: Optional[str] = None) -> str:
