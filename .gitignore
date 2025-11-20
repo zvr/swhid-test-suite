@@ -98,3 +98,4 @@ payloads/git-repository/*/
 
 # Ignore synthetic git repos created by harness
 payloads/git/synthetic/
+payloads/git/test-repo/
