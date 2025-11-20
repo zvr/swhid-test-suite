@@ -13,6 +13,19 @@ from typing import Optional
 
 from harness.plugins.base import SwhidImplementation, ImplementationInfo, ImplementationCapabilities
 
+
+def _oid_to_hex(oid: pygit2.Oid) -> str:
+    """
+    Convert a pygit2 Oid (or Oid-like object) to its hexadecimal string.
+    Some pygit2 builds expose `.hex`, others only implement `__str__`.
+    """
+    if oid is None:
+        raise ValueError("OID is None")
+    try:
+        return oid.hex  # type: ignore[attr-defined]
+    except AttributeError:
+        return str(oid)
+
 try:
     import pygit2
     PYGIT2_AVAILABLE = True
@@ -187,7 +200,7 @@ class Implementation(SwhidImplementation):
                         ref = repo.lookup_reference(ref_name)
                         # Get target as hex string (handle both Oid and other types)
                         if isinstance(ref.target, pygit2.Oid):
-                            target_hex = ref.target.hex
+                            target_hex = _oid_to_hex(ref.target)
                             target_oid = ref.target
                         else:
                             target_hex = str(ref.target)
@@ -213,7 +226,7 @@ class Implementation(SwhidImplementation):
                                     target_oid = pygit2.Oid(hex=str(ref.target))
                                 walker = repo.walk(target_oid, pygit2.GIT_SORT_TIME)
                                 for commit_obj in walker:
-                                    commit_hex = commit_obj.id.hex
+                                    commit_hex = _oid_to_hex(commit_obj.id)
                                     if commit_hex.startswith(commit):
                                         found = True
                                         break
@@ -240,8 +253,8 @@ class Implementation(SwhidImplementation):
         if not isinstance(commit_obj, pygit2.Commit):
             raise ValueError(f"Object '{commit}' is not a commit")
         
-        # Get commit ID - commit_obj.id should always be an Oid with .hex
-        commit_id = commit_obj.id.hex
+        # Get commit ID - normalize across pygit2 versions
+        commit_id = _oid_to_hex(commit_obj.id)
         return f"swh:1:rev:{commit_id}"
     
     def _compute_release_swhid(self, repo_path: str, tag: Optional[str] = None) -> str:
@@ -266,7 +279,7 @@ class Implementation(SwhidImplementation):
             tag_obj = repo[tag_ref.target]
             if isinstance(tag_obj, pygit2.Tag):
                 # Annotated tag - use the tag object hash
-                tag_id = tag_obj.id.hex
+                tag_id = _oid_to_hex(tag_obj.id)
                 return f"swh:1:rel:{tag_id}"
             else:
                 # Lightweight tag - points to a commit, not a tag object
@@ -276,7 +289,7 @@ class Implementation(SwhidImplementation):
             # Try peeling to see what it points to
             tag_obj = tag_ref.peel()
             if isinstance(tag_obj, pygit2.Tag):
-                tag_id = tag_obj.id.hex
+                tag_id = _oid_to_hex(tag_obj.id)
                 return f"swh:1:rel:{tag_id}"
             else:
                 raise ValueError(f"Tag '{tag}' is a lightweight tag, not an annotated tag. Releases require annotated tags.")
