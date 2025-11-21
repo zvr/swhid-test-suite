@@ -1,0 +1,12 @@
+# Ensure test files use LF line endings for consistent SWHID computation
+# Exception: files specifically testing CRLF line endings should keep CRLF
+payloads/content/** text eol=lf
+payloads/content/edge_cases/crlf.txt -text
+payloads/content/edge_cases/mixed_line_endings.txt -text
+payloads/directory/** text eol=lf
+
+# Binary files
+*.bin binary
+*.zip binary
+*.tar.gz binary
+
