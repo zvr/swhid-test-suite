@@ -171,12 +171,13 @@ jobs:
         run: |
           pytest tests/unit/ tests/integration/ -v --tb=short
       
-      - name: Run harness with built-in implementations only
+      - name: Run full test suite (all categories and implementations)
+        shell: bash
         run: |
-          # Test harness with implementations that are guaranteed to be available
-          # (git and pygit2 use Python packages, no external tools needed)
-          swhid-harness --impl git,pygit2 --category content --output-format canonical --dashboard-output results.json || true
-          echo "Harness test with built-in implementations completed"
+          # Run full test suite with all available implementations
+          # The harness will automatically skip implementations that are not available
+          swhid-harness --output-format canonical --dashboard-output results.json || true
+          echo "Full test suite completed (some implementations may be skipped)"
       
       - name: Generate HTML results table
         if: always()
@@ -224,7 +225,6 @@ jobs:
             echo "| Note | No results file (harness tests may have been skipped) |" >> $GITHUB_STEP_SUMMARY
           fi
 
-  publish-dashboard:
     needs: test
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
@@ -305,7 +305,6 @@ jobs:
                 } else if (pages.data.source.type === 'branch') {
                   console.log('⚠ Pages is configured for branch deployment, not GitHub Actions');
                   console.log('⚠ Please change Pages source to "GitHub Actions" in repository settings');
-                  console.log('⚠ See PAGES_CONFIGURATION_FIX.md for instructions');
                   core.setOutput('enabled', 'false');
                 } else {
                   console.log('⚠ Pages source type unknown:', pages.data.source.type);
@@ -323,7 +322,7 @@ jobs:
               console.log('Note: If Pages deployment fails, ensure:');
               console.log('1. Pages is enabled in Settings → Pages');
               console.log('2. Pages source is set to "GitHub Actions"');
-              console.log('3. See PAGES_CONFIGURATION_FIX.md for detailed instructions');
+              console.log('3. Ensure Pages is enabled and configured for GitHub Actions');
               // Try to proceed anyway - let configure-pages handle the actual check
               core.setOutput('enabled', 'true');
             }
