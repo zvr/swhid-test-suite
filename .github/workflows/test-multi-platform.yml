@@ -2,7 +2,7 @@ name: SWHID Testing Harness (Multi-Platform)
 
 on:
   schedule:
-    - cron: "17 2 * * 6"  # Weekly run on Saturdays at 2:17 AM UTC
+    - cron: "17 2 * * *"  # Nightly run at 2:17 AM UTC
   workflow_dispatch:  # Allow manual triggering from GitHub Actions UI
 
 jobs:
@@ -554,7 +554,7 @@ jobs:
                 } else if (pages.data.source.type === 'branch') {
                   console.log('⚠ Pages is configured for branch deployment, not GitHub Actions');
                   console.log('⚠ Please change Pages source to "GitHub Actions" in repository settings');
-                  console.log('⚠ See PAGES_CONFIGURATION_FIX.md for instructions');
+                  console.log('⚠ Please change Pages source to "GitHub Actions" in repository settings');
                   core.setOutput('enabled', 'false');
                 } else {
                   console.log('⚠ Pages source type unknown:', pages.data.source.type);
@@ -572,7 +572,7 @@ jobs:
               console.log('Note: If Pages deployment fails, ensure:');
               console.log('1. Pages is enabled in Settings → Pages');
               console.log('2. Pages source is set to "GitHub Actions"');
-              console.log('3. See PAGES_CONFIGURATION_FIX.md for detailed instructions');
+              console.log('3. Ensure Pages is enabled and configured for GitHub Actions');
               // Try to proceed anyway - let configure-pages handle the actual check
               core.setOutput('enabled', 'true');
             }
