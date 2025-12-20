@@ -224,9 +224,6 @@ jobs:
           else
             echo "| Note | No results file (harness tests may have been skipped) |" >> $GITHUB_STEP_SUMMARY
           fi
-
-    needs: test
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
