@@ -79,13 +79,26 @@ class DashboardGenerator:
         index_template = self._load_template('index.html')
         
         # Prepare context
+        platform_stats = data.get('platform_stats', {})
+        total_results = data.get('total_results', 0)
+        total_passed = data.get('total_passed', 0)
+        total_failed = data.get('total_failed', 0)
+        total_skipped = data.get('total_skipped', 0)
+        
         context = {
             'title': 'Dashboard',
             'total_runs': data.get('total_runs', 0),
             'total_tests': data.get('total_tests', 0),
-            'overall_pass_rate': data.get('overall_pass_rate', 0),
+            'total_results': total_results,
+            'total_passed': total_passed,
+            'total_failed': total_failed,
+            'total_skipped': total_skipped,
+            'overall_pass_rate': round(data.get('overall_pass_rate', 0), 2),
+            'overall_fail_rate': round(data.get('overall_fail_rate', 0), 2),
+            'overall_skip_rate': round(data.get('overall_skip_rate', 0), 2),
             'implementations': ', '.join(data.get('implementations', [])),
             'runs': data.get('runs', []),
+            'platform_stats': platform_stats,
         }
         
         # Determine pass rate class
@@ -97,25 +110,109 @@ class DashboardGenerator:
         else:
             context['pass_rate_class'] = 'danger'
         
+        # Generate platform breakdown HTML
+        platform_breakdown_html = []
+        if platform_stats:
+            for platform, stats in sorted(platform_stats.items()):
+                total = stats.get('total', 0)
+                passed = stats.get('passed', 0)
+                failed = stats.get('failed', 0)
+                skipped = stats.get('skipped', 0)
+                pass_rate = stats.get('pass_rate', 0.0)
+                fail_rate = stats.get('fail_rate', 0.0)
+                skip_rate = stats.get('skip_rate', 0.0)
+                
+                # Determine pass rate class for this platform
+                if pass_rate >= 80:
+                    platform_class = 'success'
+                elif pass_rate >= 50:
+                    platform_class = 'warning'
+                else:
+                    platform_class = 'danger'
+                
+                platform_breakdown_html.append(f"""
+                    <div class="platform-card">
+                        <div class="platform-header">
+                            <h3>{platform}</h3>
+                            <span class="badge badge-{platform_class}">{pass_rate:.1f}%</span>
+                        </div>
+                        <div class="platform-details">
+                            <div class="platform-stat">
+                                <span class="stat-label">Pass</span>
+                                <span class="stat-value stat-pass">{pass_rate:.1f}%</span>
+                                <span class="stat-count">({passed}/{total})</span>
+                            </div>
+                            <div class="platform-stat">
+                                <span class="stat-label">Fail</span>
+                                <span class="stat-value stat-fail">{fail_rate:.1f}%</span>
+                                <span class="stat-count">({failed}/{total})</span>
+                            </div>
+                            <div class="platform-stat">
+                                <span class="stat-label">Skip</span>
+                                <span class="stat-value stat-skip">{skip_rate:.1f}%</span>
+                                <span class="stat-count">({skipped}/{total})</span>
+                            </div>
+                        </div>
+                    </div>
+                """)
+        else:
+            platform_breakdown_html.append('<p class="text-muted">No platform data available</p>')
+        
+        context['platform_breakdown'] = '\n'.join(platform_breakdown_html) if platform_breakdown_html else ''
+        
         # Generate runs table rows
         runs_rows = []
         for run in context['runs']:
             run_pass_class = 'success' if run['pass_rate'] >= 80 else 'warning' if run['pass_rate'] >= 50 else 'danger'
             commit_short = run['commit'][:7] if run['commit'] != 'unknown' else 'unknown'
             created_at = run['created_at'][:19] if len(run['created_at']) > 19 else run['created_at']
+            
+            # Get platform name (default to "Unknown" for backward compatibility)
+            platform = run.get('platform', 'Unknown')
+            
+            # Get per-platform stats
+            passed = run.get('passed', 0)
+            failed = run.get('failed', 0)
+            skipped = run.get('skipped', 0)
+            total = run.get('total', 0)
+            
+            # Calculate rates
+            pass_rate = run.get('pass_rate', 0.0)
+            fail_rate = run.get('failed_rate', 0.0)
+            skip_rate = run.get('skipped_rate', 0.0)
+            
+            # Format platform breakdown
+            if total > 0:
+                platform_breakdown = f"""
+                        <div class="platform-stats">
+                            <span class="stat-pass">✓ {pass_rate:.1f}%</span>
+                            <span class="stat-fail">✗ {fail_rate:.1f}%</span>
+                            <span class="stat-skip">⊘ {skip_rate:.1f}%</span>
+                        </div>
+                        <div class="platform-counts">
+                            <small>({passed}/{total} pass, {failed} fail, {skipped} skip)</small>
+                        </div>
+                    """
+            else:
+                platform_breakdown = '<span class="text-muted">No data</span>'
+            
             runs_rows.append(f"""
                 <tr>
                     <td><code>{run['id']}</code></td>
                     <td>{run['branch']}</td>
                     <td><code>{commit_short}</code></td>
-                    <td><span class="badge badge-{run_pass_class}">{run['pass_rate']}%</span></td>
+                    <td><strong>{platform}</strong></td>
+                    <td>
+                        <span class="badge badge-{run_pass_class}">{run['pass_rate']:.1f}%</span>
+                        {platform_breakdown}
+                    </td>
                     <td>{created_at}</td>
                     <td>
                         <a href="data/runs/{run['id']}.json">JSON</a>
                     </td>
                 </tr>
             """)
-        context['runs_rows'] = '\n'.join(runs_rows) if runs_rows else '<tr><td colspan="6">No runs available</td></tr>'
+        context['runs_rows'] = '\n'.join(runs_rows) if runs_rows else '<tr><td colspan="7">No runs available</td></tr>'
         
         # Generate artifact HTML section
         if artifact_files:
