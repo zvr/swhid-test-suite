@@ -22,28 +22,32 @@ class Implementation(SwhidImplementation):
         self._find_swhid_path()
     
     def _find_swhid_path(self) -> Optional[str]:
-        """Find the swhid command path and cache it."""
+        """Find the swhid command path and cache it.
+        
+        Prefers Ruby gem's swhid over Rust binary by checking gem-specific
+        paths first, then falling back to PATH search.
+        """
         if self._swhid_path:
             return self._swhid_path
         
         import shutil
-        
-        # First, try to find swhid command in PATH
-        swhid_path = shutil.which("swhid")
-        if swhid_path:
-            self._swhid_path = swhid_path
-            return swhid_path
-        
-        # If not in PATH, try common gem locations
         import os
         import glob
+        
+        # CRITICAL: Check gem-specific paths FIRST to prefer Ruby gem over Rust binary
+        # The Rust binary may be in PATH and come first, but we need the Ruby gem
         home = os.path.expanduser("~")
         gem_paths = [
             os.path.join(home, ".gem", "ruby", "*", "bin", "swhid"),
             os.path.join(home, ".local", "share", "gem", "ruby", "*", "bin", "swhid"),
         ]
         
-        # Also try system gem locations
+        # Also try GEM_HOME if set (used by ruby/setup-ruby)
+        gem_home = os.environ.get("GEM_HOME")
+        if gem_home:
+            gem_paths.append(os.path.join(gem_home, "bin", "swhid"))
+        
+        # Also try system gem locations via Ruby
         try:
             import subprocess as sp
             gem_env_result = sp.run(
@@ -61,13 +65,44 @@ class Implementation(SwhidImplementation):
         except Exception:
             pass
         
-        # Try to find swhid in any of these locations
+        # Try to find swhid in gem-specific locations first
         for pattern in gem_paths:
             matches = glob.glob(pattern)
             for swhid_cmd in matches:
                 if os.path.isfile(swhid_cmd) and os.access(swhid_cmd, os.X_OK):
-                    self._swhid_path = swhid_cmd
-                    return swhid_cmd
+                    # Verify it's the Ruby gem by checking if it supports 'snapshot' command
+                    # (Rust version doesn't support snapshot yet)
+                    try:
+                        result = subprocess.run(
+                            [swhid_cmd, "snapshot", "--help"],
+                            capture_output=True,
+                            text=True,
+                            timeout=2
+                        )
+                        if result.returncode == 0 or "snapshot" in result.stdout or "snapshot" in result.stderr:
+                            self._swhid_path = swhid_cmd
+                            return swhid_cmd
+                    except Exception:
+                        # If check fails, assume it's the Ruby gem (better than nothing)
+                        self._swhid_path = swhid_cmd
+                        return swhid_cmd
+        
+        # Fallback: try to find swhid command in PATH (may be Rust binary)
+        swhid_path = shutil.which("swhid")
+        if swhid_path:
+            # Verify it supports snapshot (Ruby gem) vs not (Rust binary)
+            try:
+                result = subprocess.run(
+                    [swhid_path, "snapshot", "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0 or "snapshot" in result.stdout or "snapshot" in result.stderr:
+                    self._swhid_path = swhid_path
+                    return swhid_path
+            except Exception:
+                pass
         
         return None
 

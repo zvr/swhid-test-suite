@@ -1,0 +1,115 @@
+name: Build swhid-rs with cache
+description: Build swhid-rs with split registry/target caching (matrix-safe)
+
+inputs:
+  rust:
+    description: Rust toolchain channel (e.g., stable)
+    required: true
+  profile:
+    description: Cargo build profile (release or debug)
+    required: true
+  features:
+    description: Cargo feature list (e.g. "git")
+    required: true
+
+  repository:
+    description: GitHub repository to checkout (owner/name)
+    required: false
+    default: swhid/swhid-rs
+
+  ref:
+    description: Git ref to checkout (branch/tag/sha)
+    required: false
+    default: main
+
+  token:
+    description: >
+      GitHub token with read access to the repository.
+      Required for private repositories.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------
+    # Deterministic build environment
+    # ------------------------------------------------------------
+    - name: Configure build environment
+      shell: bash
+      run: |
+        echo "CARGO_TARGET_DIR=${{ runner.temp }}/cargo-target-swhid-rs" >> "$GITHUB_ENV"
+        echo "SWHID_RS_PROFILE=${{ inputs.profile }}" >> "$GITHUB_ENV"
+        echo "SWHID_RS_FEATURES=${{ inputs.features }}" >> "$GITHUB_ENV"
+
+    # ------------------------------------------------------------
+    # Rust toolchain fingerprint
+    # ------------------------------------------------------------
+    - name: Compute Rust toolchain hash
+      shell: bash
+      run: |
+        echo "RUSTC_HASH=$(rustc -Vv | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+    # ------------------------------------------------------------
+    # Authenticated checkout (PRIVATE-REPO SAFE)
+    # ------------------------------------------------------------
+    - name: Checkout swhid-rs
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        path: swhid-rs
+        fetch-depth: 1
+        token: ${{ inputs.token }}
+
+    # ------------------------------------------------------------
+    # Dependency fingerprint
+    # ------------------------------------------------------------
+    - name: Compute Cargo.lock hash
+      shell: bash
+      run: |
+        cd swhid-rs
+        echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+    # ------------------------------------------------------------
+    # Cache 1: Cargo registry + git (download cache)
+    # ------------------------------------------------------------
+    - name: Cache Cargo registry and git
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-registry-${{ runner.os }}-${{ env.RUSTC_HASH }}-${{ env.CARGO_LOCK_HASH }}
+        restore-keys: |
+          cargo-registry-${{ runner.os }}-${{ env.RUSTC_HASH }}-
+          cargo-registry-${{ runner.os }}-
+
+    # ------------------------------------------------------------
+    # Cache 2: Rust target dir (compiled outputs, strict)
+    # ------------------------------------------------------------
+    - name: Cache Rust target dir
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CARGO_TARGET_DIR }}
+        key: >
+          swhid-rs-target-
+          ${{ runner.os }}-
+          ${{ inputs.rust }}-
+          ${{ env.SWHID_RS_PROFILE }}-
+          feat${{ env.SWHID_RS_FEATURES }}-
+          ${{ env.RUSTC_HASH }}-
+          ${{ env.CARGO_LOCK_HASH }}
+
+    # ------------------------------------------------------------
+    # Build
+    # ------------------------------------------------------------
+    - name: Build swhid-rs
+      shell: bash
+      run: |
+        cd swhid-rs
+        if [ "${{ inputs.profile }}" = "release" ]; then
+          cargo build --release --features "${{ inputs.features }}"
+        else
+          cargo build --features "${{ inputs.features }}"
+        fi

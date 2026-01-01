@@ -20,8 +20,6 @@ class Implementation(SwhidImplementation):
     """Rust SWHID implementation plugin."""
     
     def __init__(self) -> None:
-        self._git_build_ready = False
-        self._default_build_ready = False
         self._binary_path_cache: Optional[str] = None
         self._temp_dirs: list = []  # Track temp directories for cleanup
         self._content_command_format: Optional[str] = None  # Cache detected format: "positional" or "file_flag"
@@ -38,36 +36,87 @@ class Implementation(SwhidImplementation):
             dependencies=["cargo", "rustc"]
         )
     
+    def _resolve_binary_path_from_env(self) -> Optional[str]:
+        """Resolve binary path from SWHID_RS_PATH environment variable.
+        
+        Handles three cases:
+        1. Points to binary file: use it directly
+        2. Points to binary directory: look for 'swhid' in that directory
+        3. Points to project root: construct path to target/release/swhid
+        
+        Returns:
+            Binary path if found, None otherwise
+        """
+        import platform
+        
+        env_path = os.environ.get("SWHID_RS_PATH")
+        if not env_path:
+            return None
+        
+        env_path_obj = Path(env_path)
+        if not env_path_obj.exists():
+            return None
+        
+        binary_name = "swhid.exe" if platform.system() == "Windows" else "swhid"
+        
+        # Case 1: Points to binary file
+        if env_path_obj.is_file() and env_path_obj.name in ("swhid", "swhid.exe"):
+            if os.access(env_path_obj, os.X_OK):
+                return str(env_path_obj)
+        
+        # Case 2: Points to binary directory (e.g., /path/to/release/)
+        if env_path_obj.is_dir():
+            binary_path = env_path_obj / binary_name
+            if binary_path.exists() and os.access(binary_path, os.X_OK):
+                return str(binary_path)
+        
+        # Case 3: Points to project root (has Cargo.toml)
+        cargo_toml = env_path_obj / "Cargo.toml"
+        if cargo_toml.exists():
+            binary_path = env_path_obj / "target" / "release" / binary_name
+            if binary_path.exists() and os.access(binary_path, os.X_OK):
+                return str(binary_path)
+        
+        return None
+    
     def is_available(self) -> bool:
-        """Check if Rust implementation is available."""
+        """Check if Rust implementation is available.
+        
+        First checks SWHID_RS_PATH environment variable (set by build process).
+        Falls back to PATH search if not set.
+        """
+        import shutil
+        
         try:
-            # Check if cargo is available
-            result = subprocess.run(
-                ["cargo", "--version"],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=5
-            )
-            if result.returncode != 0:
-                return False
+            # First, check SWHID_RS_PATH environment variable
+            binary_path = self._resolve_binary_path_from_env()
+            if binary_path:
+                # Verify it's executable and responds to --help
+                result = subprocess.run(
+                    [binary_path, "--help"],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=5
+                )
+                return result.returncode == 0
             
-            # Check if swhid-rs project exists and is accessible
-            project_root = self._get_project_root()
-            if not project_root:
-                return False
+            # Fallback: Check PATH
+            swhid_path = shutil.which("swhid")
+            if swhid_path and Path(swhid_path).exists() and os.access(swhid_path, os.X_OK):
+                # Verify it's executable and responds to --help
+                result = subprocess.run(
+                    [swhid_path, "--help"],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=5
+                )
+                return result.returncode == 0
             
-            # Verify the project can be accessed (Cargo.toml exists and is readable)
-            cargo_toml = Path(project_root) / "Cargo.toml"
-            if not cargo_toml.exists():
-                return False
-            
-            # Optionally: Check if project can be built (but this is slow, so skip for now)
-            # We'll discover build issues when actually trying to use it
-            # For now, just verify the project structure exists
-            
-            return True
+            return False
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             return False
     
@@ -82,18 +131,14 @@ class Implementation(SwhidImplementation):
             supports_percent_encoding=True
         )
     
-    def _build_binary(self, project_root: str, use_git_feature: bool) -> str:
-        """Build the Rust binary, optionally enabling the git feature."""
+    def _build_binary(self, project_root: str) -> str:
+        """Build the Rust binary with git feature enabled."""
         import platform
         # On Windows, the binary is swhid.exe, on Unix it's swhid
         binary_name = "swhid.exe" if platform.system() == "Windows" else "swhid"
         binary_path = Path(project_root) / "target" / "release" / binary_name
-        build_cmd = ["cargo", "build", "--release"]
-        if use_git_feature:
-            build_cmd.extend(["--features", "git"])
-            logger.info("Building Rust binary with git feature enabled...")
-        else:
-            logger.info("Building Rust binary without git feature...")
+        build_cmd = ["cargo", "build", "--release", "--features", "git"]
+        logger.info("Building Rust binary with git feature enabled...")
         
         result = subprocess.run(
             build_cmd,
@@ -116,29 +161,49 @@ class Implementation(SwhidImplementation):
         self._binary_path_cache = str(binary_path)
         return self._binary_path_cache
 
-    def _ensure_binary_built(self, project_root: str, needs_git: bool = False) -> str:
-        """Ensure the Rust binary is built (with git feature if needed) and return its path."""
+    def _ensure_binary_built(self) -> str:
+        """Find the Rust swhid binary and return its path.
+        
+        Priority order:
+        1. SWHID_RS_PATH environment variable (set by build process)
+        2. PATH search (fallback)
+        3. Build from source (backward compatibility)
+        """
+        import shutil
         import platform
-        binary_name = "swhid.exe" if platform.system() == "Windows" else "swhid"
-        binary_path = self._binary_path_cache or str(Path(project_root) / "target" / "release" / binary_name)
         
-        # If git feature is required but we haven't built with it yet, build now
-        if needs_git and not self._git_build_ready:
-            binary_path = self._build_binary(project_root, use_git_feature=True)
-            self._git_build_ready = True
-            # Building with git feature also produces a usable binary for non-git operations
-            self._default_build_ready = True
+        # Use cached path if available
+        if self._binary_path_cache:
+            return self._binary_path_cache
+        
+        # First, check SWHID_RS_PATH environment variable
+        binary_path = self._resolve_binary_path_from_env()
+        if binary_path:
+            self._binary_path_cache = binary_path
             return binary_path
         
-        # If binary missing entirely or never built, build without git feature
-        if not Path(binary_path).exists() or not self._default_build_ready:
-            binary_path = self._build_binary(project_root, use_git_feature=needs_git)
-            self._default_build_ready = True
-            if needs_git:
-                self._git_build_ready = True
+        # Fallback: Check PATH
+        binary_path = shutil.which("swhid")
+        if binary_path and Path(binary_path).exists() and os.access(binary_path, os.X_OK):
+            self._binary_path_cache = binary_path
             return binary_path
         
-        return binary_path
+        # Fallback: Try to build from source if project root is available
+        # This maintains backward compatibility for local development
+        project_root = self._get_project_root()
+        if project_root:
+            binary_name = "swhid.exe" if platform.system() == "Windows" else "swhid"
+            binary_path = str(Path(project_root) / "target" / "release" / binary_name)
+            
+            # If binary doesn't exist at expected location, try to build it
+            if not Path(binary_path).exists():
+                binary_path = self._build_binary(project_root)
+            
+            self._binary_path_cache = binary_path
+            return binary_path
+        
+        # If we can't find or build the binary, raise an error
+        raise RuntimeError("Rust swhid binary not found. Set SWHID_RS_PATH environment variable or ensure swhid is in PATH.")
     
     def compute_swhid(self, payload_path: str, obj_type: Optional[str] = None,
                      commit: Optional[str] = None, tag: Optional[str] = None,
@@ -160,18 +225,8 @@ class Implementation(SwhidImplementation):
         if obj_type is None:
             obj_type = self.detect_object_type(payload_path)
         
-        # Get project root
-        project_root = self._get_project_root()
-        if not project_root:
-            raise RuntimeError("Could not find Rust project root. Set SWHID_RS_PATH environment variable or ensure swhid-rs project is accessible.")
-        
-        # Determine if we need git feature
-        # Directory operations may need git feature for --permissions-source git-index
-        # (though auto-detection will work without it if no Git repo is found)
-        needs_git = obj_type in ("snapshot", "revision", "release") or obj_type == "directory"
-        
-        # Ensure binary is built (check and build if needed)
-        binary_path = self._ensure_binary_built(project_root, needs_git=needs_git)
+        # Get binary path (from PATH or build from source)
+        binary_path = self._ensure_binary_built()
         
         # Build the command based on object type
         # Run the binary directly instead of cargo run
@@ -274,7 +329,6 @@ class Implementation(SwhidImplementation):
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                cwd=project_root,
                 timeout=60  # Increased timeout since we're running binary directly (no compilation)
             )
             
@@ -300,7 +354,6 @@ class Implementation(SwhidImplementation):
                             text=True,
                             encoding='utf-8',
                             errors='replace',
-                            cwd=project_root,
                             timeout=60
                         )
                         if alt_result.returncode == 0:
@@ -324,7 +377,6 @@ class Implementation(SwhidImplementation):
                             text=True,
                             encoding='utf-8',
                             errors='replace',
-                            cwd=project_root,
                             timeout=60
                         )
                         if alt_result.returncode == 0:
@@ -784,16 +836,19 @@ class Implementation(SwhidImplementation):
         Find the Rust project root directory.
         
         Search order:
-        1. SWHID_RS_PATH environment variable (if set)
+        1. SWHID_RS_PATH environment variable (if it points to project root)
         2. Hardcoded known location (/home/dicosmo/code/swhid-rs)
         3. Search current directory and parents for Cargo.toml with name="swhid"
         """
-        # 1. Check environment variable first (most flexible)
+        # 1. Check environment variable first (if it points to project root)
         env_path = os.environ.get("SWHID_RS_PATH")
         if env_path:
             env_path_obj = Path(env_path)
-            if env_path_obj.exists() and (env_path_obj / "Cargo.toml").exists():
-                return str(env_path_obj)
+            if env_path_obj.exists():
+                # Check if it's a project root (has Cargo.toml)
+                cargo_toml = env_path_obj / "Cargo.toml"
+                if cargo_toml.exists():
+                    return str(env_path_obj)
         
         # 2. Try the known location (for backwards compatibility)
         known_path = Path("/home/dicosmo/code/swhid-rs")

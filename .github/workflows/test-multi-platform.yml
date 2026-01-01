@@ -1,676 +1,97 @@
-name: SWHID Testing Harness (Multi-Platform)
+name: test-multi-platform
 
 on:
-  schedule:
-    - cron: "17 2 * * *"  # Nightly run at 2:17 AM UTC
-  workflow_dispatch:  # Allow manual triggering from GitHub Actions UI
+  workflow_dispatch:
 
 jobs:
-  check-changes:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    outputs:
-      changes_detected: ${{ steps.check-changes.outputs.changes_detected }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.12
-      
-      - name: Install Software Heritage Python tools
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          pip install swh.model swh.core || echo "Warning: swh Python tools not available"
-        continue-on-error: true
-      
-      - name: Set up Ruby (for version checking)
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.2'
-          bundler-cache: false
-        continue-on-error: true
-      
-      - name: Find previous workflow run
-        id: find-previous-run
-        uses: actions/github-script@v7
-        continue-on-error: true
-        with:
-          script: |
-            try {
-              const workflowRuns = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: context.workflow,
-                status: 'success',
-                per_page: 2
-              });
-              
-              if (workflowRuns.data.workflow_runs.length < 2) {
-                console.log('No previous successful run found');
-                core.setOutput('artifact_id', '');
-                return;
-              }
-              
-              const previousRun = workflowRuns.data.workflow_runs[1];
-              console.log(`Found previous run: ${previousRun.id}`);
-              
-              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: previousRun.id
-              });
-              
-              const upstreamStateArtifact = artifacts.data.artifacts.find(a => a.name === 'upstream-state');
-              
-              if (!upstreamStateArtifact) {
-                console.log('upstream-state artifact not found in previous run');
-                core.setOutput('artifact_id', '');
-                return;
-              }
-              
-              console.log(`Found upstream-state artifact: ${upstreamStateArtifact.id}`);
-              core.setOutput('artifact_id', upstreamStateArtifact.id.toString());
-            } catch (error) {
-              console.log(`Error finding previous run: ${error.message}`);
-              core.setOutput('artifact_id', '');
-            }
-      
-      - name: Download previous run state (if available)
-        if: steps.find-previous-run.outputs.artifact_id != ''
-        shell: bash
-        continue-on-error: true
-        run: |
-          mkdir -p previous-state
-          ARTIFACT_ID="${{ steps.find-previous-run.outputs.artifact_id }}"
-          
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip" \
-            -o /tmp/upstream-state.zip
-          
-          if [ -f /tmp/upstream-state.zip ] && [ -s /tmp/upstream-state.zip ]; then
-            unzip -q /tmp/upstream-state.zip -d /tmp/ 2>/dev/null || true
-            if [ -d /tmp/upstream-state ]; then
-              mv /tmp/upstream-state/* previous-state/ 2>/dev/null || true
-              rmdir /tmp/upstream-state 2>/dev/null || true
-            fi
-            echo "Successfully downloaded previous state"
-          else
-            echo "Failed to download artifact or artifact is empty"
-            mkdir -p previous-state
-          fi
-      
-      - name: Check for upstream changes
-        id: check-changes
-        shell: bash
-        run: |
-          echo "## 🔍 Checking for Upstream Changes" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          CHANGES_DETECTED=false
-          
-          # Get current state
-          CURRENT_TEST_SUITE_SHA=$(git rev-parse HEAD)
-          CURRENT_SWH_MODEL_VERSION=""
-          CURRENT_SWH_CORE_VERSION=""
-          CURRENT_SWHID_GEM_VERSION=""
-          
-          # Check changes in test-suite repository
-          echo "### Test Suite Repository" >> $GITHUB_STEP_SUMMARY
-          if [ -f previous-state/test-suite-sha.txt ]; then
-            PREVIOUS_SHA=$(cat previous-state/test-suite-sha.txt)
-            if [ "$CURRENT_TEST_SUITE_SHA" != "$PREVIOUS_SHA" ]; then
-              echo "⚠️ **Changes detected in test-suite repository**" >> $GITHUB_STEP_SUMMARY
-              echo "Previous: \`${PREVIOUS_SHA:0:7}\` → Current: \`${CURRENT_TEST_SUITE_SHA:0:7}\`" >> $GITHUB_STEP_SUMMARY
-              echo "Recent commits:" >> $GITHUB_STEP_SUMMARY
-              git log --oneline ${PREVIOUS_SHA}..${CURRENT_TEST_SUITE_SHA} | head -5 >> $GITHUB_STEP_SUMMARY || true
-              CHANGES_DETECTED=true
-            else
-              echo "✅ No changes in test-suite repository" >> $GITHUB_STEP_SUMMARY
-              echo "Current commit: \`${CURRENT_TEST_SUITE_SHA:0:7}\`" >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "ℹ️ No previous state found (first run or artifact expired)" >> $GITHUB_STEP_SUMMARY
-            echo "Current commit: \`${CURRENT_TEST_SUITE_SHA:0:7}\`" >> $GITHUB_STEP_SUMMARY
-            CHANGES_DETECTED=true
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Check for updates in swh Python packages
-          echo "### Software Heritage Python Packages" >> $GITHUB_STEP_SUMMARY
-          PACKAGES="swh.model swh.core"
-          for package in $PACKAGES; do
-            INSTALLED_VERSION=$(pip show $package 2>/dev/null | grep "^Version:" | awk '{print $2}' || echo "not installed")
-            if [ "$INSTALLED_VERSION" != "not installed" ]; then
-              if [ "$package" = "swh.model" ]; then
-                CURRENT_SWH_MODEL_VERSION="$INSTALLED_VERSION"
-              elif [ "$package" = "swh.core" ]; then
-                CURRENT_SWH_CORE_VERSION="$INSTALLED_VERSION"
-              fi
-              
-              if [ -f previous-state/${package}-version.txt ]; then
-                PREVIOUS_VERSION=$(cat previous-state/${package}-version.txt)
-                if [ "$INSTALLED_VERSION" != "$PREVIOUS_VERSION" ]; then
-                  echo "⚠️ **$package**: Previous: \`$PREVIOUS_VERSION\` → Current: \`$INSTALLED_VERSION\`" >> $GITHUB_STEP_SUMMARY
-                  CHANGES_DETECTED=true
-                else
-                  echo "✅ **$package**: \`$INSTALLED_VERSION\` (unchanged)" >> $GITHUB_STEP_SUMMARY
-                fi
-              else
-                LATEST_VERSION=$(pip index versions $package 2>/dev/null | grep "LATEST:" | awk '{print $2}' || echo "")
-                if [ -n "$LATEST_VERSION" ] && [ "$INSTALLED_VERSION" != "$LATEST_VERSION" ]; then
-                  echo "⚠️ **$package**: Installed: \`$INSTALLED_VERSION\`, Latest: \`$LATEST_VERSION\`" >> $GITHUB_STEP_SUMMARY
-                  CHANGES_DETECTED=true
-                else
-                  echo "✅ **$package**: \`$INSTALLED_VERSION\` (latest)" >> $GITHUB_STEP_SUMMARY
-                fi
-              fi
-            else
-              echo "ℹ️ **$package**: Not installed" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Check for updates in Ruby gem
-          echo "### Ruby Gem (swhid)" >> $GITHUB_STEP_SUMMARY
-          if command -v gem >/dev/null 2>&1; then
-            # Get latest version from RubyGems without installing
-            # gem search -r swhid outputs: "swhid (X.Y.Z)" or "swhid (X.Y.Z, X.Y.Z-1, ...)"
-            GEM_SEARCH_OUTPUT=$(gem search -r -e swhid 2>/dev/null | grep -E "^swhid\s" | head -1 || echo "")
-            if [ -n "$GEM_SEARCH_OUTPUT" ]; then
-              # Extract version: "swhid (1.2.3)" -> "1.2.3"
-              LATEST_GEM_VERSION=$(echo "$GEM_SEARCH_OUTPUT" | sed -E 's/^swhid\s+\(([^,)]+).*\)$/\1/' | xargs)
-              if [ -n "$LATEST_GEM_VERSION" ]; then
-                CURRENT_SWHID_GEM_VERSION="$LATEST_GEM_VERSION"
-                if [ -f previous-state/swhid-gem-version.txt ]; then
-                  PREVIOUS_VERSION=$(cat previous-state/swhid-gem-version.txt)
-                  if [ "$LATEST_GEM_VERSION" != "$PREVIOUS_VERSION" ]; then
-                    echo "⚠️ **swhid gem**: Previous: \`$PREVIOUS_VERSION\` → Current: \`$LATEST_GEM_VERSION\`" >> $GITHUB_STEP_SUMMARY
-                    CHANGES_DETECTED=true
-                  else
-                    echo "✅ **swhid gem**: \`$LATEST_GEM_VERSION\` (unchanged)" >> $GITHUB_STEP_SUMMARY
-                  fi
-                else
-                  echo "ℹ️ **swhid gem**: \`$LATEST_GEM_VERSION\` (first check)" >> $GITHUB_STEP_SUMMARY
-                  CHANGES_DETECTED=true
-                fi
-              else
-                echo "ℹ️ **swhid gem**: Could not parse version from: $GEM_SEARCH_OUTPUT" >> $GITHUB_STEP_SUMMARY
-              fi
-            else
-              echo "ℹ️ **swhid gem**: Could not find gem in RubyGems" >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "ℹ️ **swhid gem**: Ruby/gem not available for version checking" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Summary
-          if [ "$CHANGES_DETECTED" = "true" ]; then
-            echo "### 📊 Summary" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ **Changes detected upstream** - Test suite will run" >> $GITHUB_STEP_SUMMARY
-            echo "changes_detected=true" >> $GITHUB_OUTPUT
-          else
-            echo "### 📊 Summary" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **No upstream changes detected** - Skipping test suite to save resources" >> $GITHUB_STEP_SUMMARY
-            echo "changes_detected=false" >> $GITHUB_OUTPUT
-          fi
-          
-          # Save current state for next run
-          mkdir -p current-state
-          echo "$CURRENT_TEST_SUITE_SHA" > current-state/test-suite-sha.txt
-          if [ -n "$CURRENT_SWH_MODEL_VERSION" ]; then
-            echo "$CURRENT_SWH_MODEL_VERSION" > current-state/swh.model-version.txt
-          fi
-          if [ -n "$CURRENT_SWH_CORE_VERSION" ]; then
-            echo "$CURRENT_SWH_CORE_VERSION" > current-state/swh.core-version.txt
-          fi
-          if [ -n "$CURRENT_SWHID_GEM_VERSION" ]; then
-            echo "$CURRENT_SWHID_GEM_VERSION" > current-state/swhid-gem-version.txt
-          fi
-        continue-on-error: true
-      
-      - name: Upload current state for next run
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: upstream-state
-          path: current-state
-          retention-days: 90
-        continue-on-error: true
-
   test:
-    needs: check-changes
-    if: needs.check-changes.outputs.changes_detected == 'true'
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
+
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
-        python-version: ["3.12"]
-    
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+        ruby: ['3.2']
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      # ------------------------------------------------------------
+      # Checkout repository
+      # ------------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # Toolchains
+      # ------------------------------------------------------------
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
         with:
-          fetch-depth: 0  # Full history for commit info
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      
-      - name: Install system dependencies
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update
-            sudo apt-get install -y libgit2-dev pkg-config libssl-dev
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            brew install libgit2 pkg-config openssl 2>&1 | grep -vE "(Warning:.*is already installed|To reinstall)" || true
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            # On Windows, libgit2 is optional - pygit2 can work without it in some cases
-            # Try to install via vcpkg, but don't fail if it doesn't work
-            if command -v choco &> /dev/null; then
-              choco install -y vcpkg || echo "Warning: vcpkg installation failed, continuing without libgit2"
-              if command -v vcpkg &> /dev/null; then
-                vcpkg install libgit2:x64-windows || echo "Warning: libgit2 installation failed, continuing without it"
-              else
-                echo "Warning: vcpkg not in PATH, libgit2 may not be available"
-              fi
-            else
-              echo "Warning: Chocolatey not available, libgit2 may not be available"
-            fi
-          fi
-        continue-on-error: true
-      
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .[dev] psutil
-      
-      - name: Install Software Heritage Python tools
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            # swh.core has test data files with colons in names, which Windows doesn't support
-            # swh.model is sufficient for the python implementation
-            pip install swh.model || echo "Warning: swh.model not available, python implementation will be skipped"
-          else
-            pip install swh.model swh.core || echo "Warning: swh Python tools not available, some implementations may be skipped"
-          fi
-        continue-on-error: true
-      
+          toolchain: ${{ matrix.rust }}
+          profile: minimal
+          override: true
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.2'
+          ruby-version: ${{ matrix.ruby }}
           bundler-cache: false
-        continue-on-error: true
-      
-      - name: Install swhid gem
-        shell: bash
-        run: |
-          gem install swhid || echo "Warning: swhid gem not available, Ruby implementation will be skipped"
-        continue-on-error: true
-      
-      - name: Configure Git for SWHID testing
-        shell: bash
-        run: |
-          # Configure Git to preserve line endings and file permissions for SWHID testing
-          # This ensures consistent hashing across platforms
-          git config --global core.autocrlf false
-          git config --global core.filemode true
-          git config --global core.precomposeunicode false
-          git config --global core.quotepath false
-          echo "Git configured for SWHID testing"
-      
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-        continue-on-error: true
-      
-      - name: Setup SSH for private repository access (optional)
-        shell: bash
-        run: |
-          mkdir -p ~/.ssh
-          if [ -n "${{ secrets.SWHID_RS_SSH_KEY }}" ]; then
-            echo "${{ secrets.SWHID_RS_SSH_KEY }}" > ~/.ssh/id_rsa
-            chmod 600 ~/.ssh/id_rsa
-            ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-            echo "SSH key configured for repository access"
-          else
-            echo "No SSH key provided - using public HTTPS access"
-          fi
-        continue-on-error: true
-      
-      - name: Clone and build swhid-rs
-        id: swhid-rs-setup
-        shell: bash
-        env:
-          SWHID_RS_REPO: ${{ secrets.SWHID_RS_REPO || 'https://github.com/swhid/swhid-rs.git' }}
-          SWHID_RS_TOKEN: ${{ secrets.SWHID_RS_TOKEN }}
-        run: |
-          set +e
-          # Try to clone the swhid-rs repository
-          if [ -n "$SWHID_RS_REPO" ]; then
-            echo "Attempting to clone swhid-rs from $SWHID_RS_REPO"
-            # Use HTTPS with token if available (for private repos, or public access if no token)
-            if [[ "$SWHID_RS_REPO" == https://* ]]; then
-              # Force HTTPS by disabling SSH and avoiding system Git configs
-              echo "=== Debug: Git configuration before clone ==="
-              echo "Git version: $(git --version)"
-              echo "GIT_SSH_COMMAND: ${GIT_SSH_COMMAND:-<unset>}"
-              echo "GIT_CONFIG_NOSYSTEM: ${GIT_CONFIG_NOSYSTEM:-<unset>}"
-              echo "SSH key exists: $([ -f ~/.ssh/id_rsa ] && echo 'yes' || echo 'no')"
-              git config --global --list 2>/dev/null | grep -E "(url|ssh)" || echo "No global URL/SSH configs"
-              git config --system --list 2>/dev/null | grep -E "(url|ssh)" || echo "No system URL/SSH configs"
-              echo "Testing URL parsing..."
-              echo "Original URL: $SWHID_RS_REPO"
-              echo "=== End debug ==="
-              
-              # Completely disable SSH for this operation
-              unset GIT_SSH_COMMAND
-              unset GIT_SSH
-              export GIT_CONFIG_NOSYSTEM=1
-              export GIT_SSH_VARIANT=simple
-              export GIT_TERMINAL_PROMPT=0
-              
-              if [ -n "$SWHID_RS_TOKEN" ]; then
-                # Use dedicated token for repository access (if needed for private repos)
-                # Construct URL properly: extract domain and path, then rebuild with token
-                REPO_URL="https://${SWHID_RS_TOKEN}@${SWHID_RS_REPO#https://}"
-                echo "Using token for repository access"
-                echo "Repository URL (masked): https://***@${SWHID_RS_REPO#https://}"
-                echo "Attempting clone with explicit HTTPS..."
-                # Unset GIT_SSH_COMMAND (don't set to empty string) and force HTTPS
-                (unset GIT_SSH_COMMAND; unset GIT_SSH; GIT_CONFIG_NOSYSTEM=1 git clone "$REPO_URL" /tmp/swhid-rs 2>&1) | tee /tmp/swhid-rs-clone.log
-                CLONE_EXIT_CODE=${PIPESTATUS[0]}
-              elif [ -n "${{ secrets.GITHUB_TOKEN }}" ]; then
-                # Fallback to GITHUB_TOKEN if available (for private repos)
-                GITHUB_TOKEN_VALUE="${{ secrets.GITHUB_TOKEN }}"
-                REPO_URL="https://${GITHUB_TOKEN_VALUE}@${SWHID_RS_REPO#https://}"
-                echo "Using GITHUB_TOKEN for repository access"
-                echo "Repository URL (masked): https://***@${SWHID_RS_REPO#https://}"
-                echo "Attempting clone with explicit HTTPS..."
-                (unset GIT_SSH_COMMAND; unset GIT_SSH; GIT_CONFIG_NOSYSTEM=1 git clone "$REPO_URL" /tmp/swhid-rs 2>&1) | tee /tmp/swhid-rs-clone.log
-                CLONE_EXIT_CODE=${PIPESTATUS[0]}
-              else
-                # Use public access (works for public repositories)
-                echo "No token available, using public HTTPS access"
-                echo "Attempting clone with explicit HTTPS..."
-                (unset GIT_SSH_COMMAND; unset GIT_SSH; GIT_CONFIG_NOSYSTEM=1 git clone "$SWHID_RS_REPO" /tmp/swhid-rs 2>&1) | tee /tmp/swhid-rs-clone.log
-                CLONE_EXIT_CODE=${PIPESTATUS[0]}
-              fi
-            else
-              # SSH URL - use SSH key if configured
-              git clone "$SWHID_RS_REPO" /tmp/swhid-rs 2>&1 | tee /tmp/swhid-rs-clone.log
-              CLONE_EXIT_CODE=${PIPESTATUS[0]}
-            fi
-            if [ $CLONE_EXIT_CODE -eq 0 ] && [ -d /tmp/swhid-rs ]; then
-              cd /tmp/swhid-rs
-              echo "Building swhid-rs..."
-              cargo build --release 2>&1 | tee /tmp/swhid-rs-build.log
-              BUILD_EXIT_CODE=${PIPESTATUS[0]}
-              if [ $BUILD_EXIT_CODE -eq 0 ]; then
-                echo "swhid-rs built successfully"
-                echo "SWHID_RS_PATH=/tmp/swhid-rs" >> $GITHUB_ENV
-                echo "swhid_rs_available=true" >> $GITHUB_ENV
-                echo "✅ swhid-rs is available" >> $GITHUB_STEP_SUMMARY
-              else
-                echo "swhid-rs build failed (exit code: $BUILD_EXIT_CODE)"
-                echo "Last 20 lines of build log:"
-                tail -20 /tmp/swhid-rs-build.log || true
-                echo "swhid_rs_available=false" >> $GITHUB_ENV
-                echo "⚠️ swhid-rs build failed" >> $GITHUB_STEP_SUMMARY
-              fi
-            else
-              echo "swhid-rs repository clone failed (exit code: $CLONE_EXIT_CODE)"
-              if [ -f /tmp/swhid-rs-clone.log ]; then
-                echo "Clone log:"
-                cat /tmp/swhid-rs-clone.log
-              fi
-              if [ ! -d /tmp/swhid-rs ]; then
-                echo "Directory /tmp/swhid-rs does not exist"
-              fi
-              echo "swhid_rs_available=false" >> $GITHUB_ENV
-              echo "ℹ️ swhid-rs repository not accessible - Rust implementation will be skipped" >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "SWHID_RS_REPO not configured"
-            echo "swhid_rs_available=false" >> $GITHUB_ENV
-            echo "ℹ️ SWHID_RS_REPO not configured - Rust implementation will be skipped" >> $GITHUB_STEP_SUMMARY
-          fi
-          set -e
-        continue-on-error: true
-      
-      - name: Run harness unit tests
-        run: |
-          pytest tests/unit/ tests/integration/ -v --tb=short
-      
-      - name: Run full test suite (all categories and implementations)
-        shell: bash
-        run: |
-          # Run full test suite with all available implementations
-          # The harness will automatically skip implementations that are not available
-          echo "Running full test suite (changes detected upstream)..."
-          swhid-harness --output-format canonical --dashboard-output results.json || true
-          echo "Full test suite completed (some implementations may be skipped)"
-      
-      - name: Generate HTML results table
-        if: always()
-        shell: bash
-        run: |
-          if [ -f results.json ]; then
-            python scripts/view_results.py results.json --output results.html || echo "Warning: Could not generate HTML table"
-            if [ -f results.html ]; then
-              echo "✅ HTML results table generated: results.html" >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "⚠️ No results.json file found, skipping HTML generation" >> $GITHUB_STEP_SUMMARY
-          fi
-        continue-on-error: true
-      
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: results-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: |
-            results.json
-            results.html
-          retention-days: 30
-      
-      - name: Generate test summary
-        if: always()
-        shell: bash
-        run: |
-          echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f results.json ]; then
-            # Generate statistics
-            python3 -c "import json; fp=open('results.json'); d=json.load(fp); fp.close(); a=d.get('aggregates',{}); b=a.get('by_implementation',{}); p=sum(s.get('passed',0) for s in b.values()); fa=sum(s.get('failed',0) for s in b.values()); sk=sum(s.get('skipped',0) for s in b.values()); t=p+fa+sk; r=(p/t*100) if t>0 else 0; print(f'| Metric | Value |'); print(f'|--------|-------|'); print(f'| Total Tests | {t} |'); print(f'| Passed | {p} |'); print(f'| Failed | {fa} |'); print(f'| Skipped | {sk} |'); print(f'| Success Rate | {r:.1f}% |') if b else print('| Note | Results format not recognized |')" >> $GITHUB_STEP_SUMMARY 2>&1 || echo "| Note | Error parsing results |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            # Add link to HTML results if available
-            if [ -f results.html ]; then
-              echo "### 📊 Detailed Results" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "📥 Download the [HTML results table](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) from the artifacts." >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "The HTML table provides a color-coded view of all test results across all implementations." >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "| Note | No results file (harness tests may have been skipped) |" >> $GITHUB_STEP_SUMMARY
-          fi
 
-  publish-dashboard:
-    needs: [check-changes, test]
-    if: github.ref == 'refs/heads/main' && needs.check-changes.outputs.changes_detected == 'true'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      # ------------------------------------------------------------
+      # Build swhid-rs (shared composite action)
+      # ------------------------------------------------------------
+      - name: Build swhid-rs with cache
+        uses: ./.github/actions/build-swhid-rs
         with:
-          fetch-depth: 0
-      
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.12
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .[dev]
-      
-      - name: Merge results
-        shell: bash
-        run: |
-          # Create a simple HTML summary if merge_results.py doesn't exist
-          if [ -f tools/merge_results.py ]; then
-            python tools/merge_results.py artifacts/**/results.json --site site
-          else
-            mkdir -p site
-            echo "<html><body><h1>Test Results</h1><p>Results are available in the artifacts.</p></body></html>" > site/index.html
-          fi
-      
-      - name: Generate dashboard
-        shell: bash
-        run: |
-          python -m tools.dashboard \
-            --site site \
-            --data site/data \
-            --artifacts artifacts
-      
-      - name: Check if Pages is enabled
-        id: pages-check
-        uses: actions/github-script@v7
-        continue-on-error: true
-        with:
-          script: |
-            try {
-              // Check if pages API is available
-              if (!github.rest || !github.rest.pages) {
-                console.log('⚠ Pages API not available in this context');
-                console.log('⚠ Attempting to proceed with Pages deployment anyway');
-                console.log('⚠ If deployment fails, ensure Pages is enabled in repository settings');
-                core.setOutput('enabled', 'true'); // Try anyway
-                return;
-              }
-              
-              const pages = await github.rest.pages.get({ 
-                owner: context.repo.owner, 
-                repo: context.repo.repo 
-              });
-              
-              console.log('Pages status:', JSON.stringify(pages.data, null, 2));
-              
-              // Check if Pages is configured for GitHub Actions
-              if (pages.data && pages.data.source) {
-                if (pages.data.source.type === 'workflow') {
-                  console.log('✓ Pages is configured for GitHub Actions');
-                  core.setOutput('enabled', 'true');
-                } else if (pages.data.source.type === 'branch') {
-                  console.log('⚠ Pages is configured for branch deployment, not GitHub Actions');
-                  console.log('⚠ Please change Pages source to "GitHub Actions" in repository settings');
-                  console.log('⚠ Please change Pages source to "GitHub Actions" in repository settings');
-                  core.setOutput('enabled', 'false');
-                } else {
-                  console.log('⚠ Pages source type unknown:', pages.data.source.type);
-                  console.log('⚠ Attempting to proceed anyway');
-                  core.setOutput('enabled', 'true'); // Try anyway
-                }
-              } else {
-                console.log('⚠ Pages data structure unexpected, attempting to proceed');
-                core.setOutput('enabled', 'true'); // Try anyway
-              }
-            } catch (error) {
-              console.log('⚠ Pages API call failed, but attempting to proceed');
-              console.log('Error:', error.message);
-              console.log('');
-              console.log('Note: If Pages deployment fails, ensure:');
-              console.log('1. Pages is enabled in Settings → Pages');
-              console.log('2. Pages source is set to "GitHub Actions"');
-              console.log('3. Ensure Pages is enabled and configured for GitHub Actions');
-              // Try to proceed anyway - let configure-pages handle the actual check
-              core.setOutput('enabled', 'true');
-            }
-      
-      - name: Configure Pages
-        if: steps.pages-check.outputs.enabled == 'true'
-        uses: actions/configure-pages@v5
-        continue-on-error: true
-      
-      - name: Verify site structure
-        if: steps.pages-check.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          echo "Verifying site structure..."
-          if [ ! -f site/index.html ]; then
-            echo "ERROR: site/index.html not found!"
-            echo "Site contents:"
-            ls -la site/ || true
-            find site/ -type f | head -20
-            exit 1
-          fi
-          echo "✓ site/index.html exists"
-          if [ -d site/data ]; then
-            echo "✓ site/data/ directory exists"
-            ls -la site/data/ || true
-          fi
-          if [ -d site/assets ]; then
-            echo "✓ site/assets/ directory exists"
-          fi
-      
-      - name: Upload Pages artifact
-        if: steps.pages-check.outputs.enabled == 'true'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-        continue-on-error: true
-      
-      - name: Deploy to GitHub Pages
-        if: steps.pages-check.outputs.enabled == 'true'
-        uses: actions/deploy-pages@v4
-        continue-on-error: true
+          rust: ${{ matrix.rust }}
+          profile: release
+          features: git
 
-  performance-baseline:
-    needs: test
-    runs-on: ubuntu-24.04
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      
-      - name: Update performance baselines
+      # ------------------------------------------------------------
+      # Make swhid binary available
+      # ------------------------------------------------------------
+      - name: Add swhid to PATH (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
-          echo "Performance baseline update would go here"
-          # This would update baseline performance files
-          # and detect regressions
+          echo "${{ runner.temp }}/cargo-target-swhid-rs/release" >> $GITHUB_PATH
 
+      - name: Add swhid to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          echo "${{ runner.temp }}\cargo-target-swhid-rs\release" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # ------------------------------------------------------------
+      # Ruby: dependency hash
+      # ------------------------------------------------------------
+      - name: Compute Gemfile.lock hash
+        shell: bash
+        run: |
+          echo "GEMFILE_LOCK_HASH=$(sha256sum Gemfile.lock | cut -d' ' -f1)" >> $GITHUB_ENV
+
+      # ------------------------------------------------------------
+      # Cache Ruby gems (OS + Ruby + lockfile scoped)
+      # ------------------------------------------------------------
+      - name: Cache Ruby gems
+        uses: actions/cache@v4
+        with:
+          path: vendor/bundle
+          key: bundler-${{ runner.os }}-ruby-${{ matrix.ruby }}-${{ env.GEMFILE_LOCK_HASH }}
+          restore-keys: |
+            bundler-${{ runner.os }}-ruby-${{ matrix.ruby }}-
+
+      - name: Install Ruby dependencies
+        shell: bash
+        run: |
+          bundle config set path vendor/bundle
+          bundle install --jobs 4 --retry 3
+
+      # ------------------------------------------------------------
+      # Tests / Harness
+      # ------------------------------------------------------------
+      - name: Run tests
+        shell: bash
+        run: |
+          swhid --version
+          bundle exec rake test
