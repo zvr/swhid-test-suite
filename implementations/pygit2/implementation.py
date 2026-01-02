@@ -14,7 +14,7 @@ from typing import Optional
 from harness.plugins.base import SwhidImplementation, ImplementationInfo, ImplementationCapabilities
 
 
-def _oid_to_hex(oid: pygit2.Oid) -> str:
+def _oid_to_hex(oid: "pygit2.Oid") -> str:
     """
     Convert a pygit2 Oid (or Oid-like object) to its hexadecimal string.
     Some pygit2 builds expose `.hex`, others only implement `__str__`.
@@ -61,8 +61,13 @@ class Implementation(SwhidImplementation):
         )
     
     def compute_swhid(self, payload_path: str, obj_type: Optional[str] = None,
-                     commit: Optional[str] = None, tag: Optional[str] = None) -> str:
-        """Compute SWHID using pygit2 (libgit2)."""
+                     commit: Optional[str] = None, tag: Optional[str] = None,
+                     version: Optional[int] = None, hash_algo: Optional[str] = None) -> str:
+        """Compute SWHID using pygit2 (libgit2).
+        
+        Note: pygit2 only supports SWHID v1. The version and hash_algo parameters
+        are accepted for API compatibility but are ignored.
+        """
         if not PYGIT2_AVAILABLE:
             raise RuntimeError("pygit2 library not available")
         
