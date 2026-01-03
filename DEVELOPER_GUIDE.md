@@ -177,7 +177,7 @@ def compute_swhid(self, payload_path: str, obj_type: Optional[str] = None) -> st
     return result.stdout.strip()
 ```
 
-See `implementations/example/implementation.py` for a complete example.
+See existing implementations in `implementations/` (e.g., `implementations/python/implementation.py`) for complete examples.
 
 ## Running Tests
 
