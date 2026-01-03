@@ -29,6 +29,16 @@ from .models import (
     ExpectedRef, Result, Metrics, ErrorInfo, Aggregates, make_run_id, get_runner_info, format_rfc3339,
     ImplementationCapabilitiesModel, DiffEntry
 )
+from .config import HarnessConfig
+from .exceptions import (
+    SwhidHarnessError, ConfigurationError, ImplementationError,
+    TestExecutionError, ResultError, TimeoutError, ResourceLimitError, IOError as HarnessIOError
+)
+from .resource_manager import ResourceManager
+from .git_manager import GitManager
+from .comparator import ResultComparator
+from .output import OutputGenerator
+from .runner import TestRunner
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,24 +49,47 @@ class SwhidHarness:
     
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = config_path
-        self.config = self._load_config()
-        self.results_dir = Path(self.config["output"]["results_dir"])
+        try:
+            self.config = HarnessConfig.load_from_file(config_path)
+        except FileNotFoundError as e:
+            raise ConfigurationError(
+                f"Configuration file not found: {config_path}",
+                config_path=config_path,
+                subtype="file_not_found"
+            ) from e
+        except ValueError as e:
+            raise ConfigurationError(
+                f"Invalid configuration: {e}",
+                config_path=config_path
+            ) from e
+        
+        self.results_dir = Path(self.config.output.results_dir)
         self.results_dir.mkdir(exist_ok=True)
         
         # Initialize implementation discovery
         self.discovery = ImplementationDiscovery()
         self.implementations = {}
         
-        # Track temporary directories created from tarballs
-        self._temp_dirs = []
+        # Initialize resource manager
+        self.resource_manager = ResourceManager()
+        atexit.register(self.resource_manager.cleanup_temp_dirs)
         
-        # Register cleanup function
-        atexit.register(self._cleanup_temp_dirs)
+        # Initialize Git manager
+        self.git_manager = GitManager()
         
+        # Initialize comparator
+        self.comparator = ResultComparator()
+        
+        # Initialize output generator (will be set when implementations are loaded)
+        self.output_generator = None
+        
+        # Initialize test runner (will be set when implementations are loaded)
+        self.test_runner = None
+    
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
-        with open(self.config_path, 'r') as f:
-            return yaml.safe_load(f)
+        """Load configuration from YAML file (deprecated - use self.config directly)."""
+        # Return dict representation for backward compatibility
+        return self.config.model_dump(mode='python')
     
     def _load_implementations(self, impl_names: Optional[List[str]] = None) -> Dict[str, SwhidImplementation]:
         """Load implementations using the discovery system."""
@@ -77,153 +110,45 @@ class SwhidHarness:
         return filtered
     
     def _cleanup_temp_dirs(self):
-        """Clean up temporary directories created from tarballs."""
-        for temp_dir in self._temp_dirs:
-            if os.path.exists(temp_dir):
-                try:
-                    if platform.system() == 'Windows':
-                        # On Windows, use a more robust cleanup that handles locked files
-                        self._rmtree_windows(temp_dir)
-                    else:
-                        shutil.rmtree(temp_dir)
-                    logger.debug(f"Cleaned up temporary directory: {temp_dir}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up temporary directory {temp_dir}: {e}")
-        self._temp_dirs.clear()
-    
-    def _rmtree_windows(self, path):
-        """Windows-specific recursive delete that handles locked files gracefully.
-        
-        On Windows, Git object files may be locked by the file system, preventing
-        normal deletion. This method attempts to handle such cases gracefully.
-        """
-        import stat
-        import time
-        
-        def handle_remove_readonly(func, path, exc):
-            """Handle readonly files on Windows."""
-            if os.path.exists(path):
-                try:
-                    os.chmod(path, stat.S_IWRITE)
-                    func(path)
-                except (OSError, PermissionError):
-                    pass  # Skip files that can't be modified
-        
-        # Retry with exponential backoff for locked files
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                shutil.rmtree(path, onerror=handle_remove_readonly)
-                return
-            except (OSError, PermissionError) as e:
-                if attempt < max_retries - 1:
-                    time.sleep(0.1 * (2 ** attempt))
-                else:
-                    # Last attempt failed - try best-effort cleanup
-                    logger.debug(f"Could not fully remove {path} after {max_retries} attempts, attempting best-effort cleanup")
-                    try:
-                        # Try to remove individual files that aren't locked
-                        for root, dirs, files in os.walk(path, topdown=False):
-                            for name in files:
-                                file_path = os.path.join(root, name)
-                                try:
-                                    os.chmod(file_path, stat.S_IWRITE)
-                                    os.remove(file_path)
-                                except (OSError, PermissionError):
-                                    pass  # Skip locked files
-                            for name in dirs:
-                                dir_path = os.path.join(root, name)
-                                try:
-                                    os.rmdir(dir_path)
-                                except (OSError, PermissionError):
-                                    pass  # Skip locked directories
-                    except Exception:
-                        pass  # Best effort cleanup - don't fail if this also fails
+        """Clean up temporary directories created from tarballs (delegates to ResourceManager)."""
+        self.resource_manager.cleanup_temp_dirs()
     
     def _obj_type_to_swhid_code(self, obj_type: str) -> str:
         """Map object type to SWHID type code."""
-        mapping = {
-            "content": "cnt",
-            "directory": "dir",
-            "revision": "rev",
-            "release": "rel",
-            "snapshot": "snp"
-        }
-        return mapping.get(obj_type, obj_type)
+        from .utils.constants import obj_type_to_swhid_code
+        return obj_type_to_swhid_code(obj_type)
     
     def _extract_tarball_if_needed(self, payload_path: str) -> str:
-        """Extract tarball to temporary directory if payload is a .tar.gz file.
-        
-        Returns:
-            Path to the extracted directory (or original path if not a tarball)
-        """
-        if not payload_path.endswith('.tar.gz'):
-            return payload_path
-        
-        # Resolve absolute path
-        if not os.path.isabs(payload_path):
-            config_dir = os.path.dirname(os.path.abspath(self.config_path))
-            payload_path = os.path.join(config_dir, payload_path)
-        
-        if not os.path.exists(payload_path):
-            raise FileNotFoundError(f"Tarball not found: {payload_path}")
-        
-        # Create temporary directory
-        temp_dir = tempfile.mkdtemp(prefix="swhid_test_")
-        self._temp_dirs.append(temp_dir)
-        
-        # Extract tarball
-        logger.debug(f"Extracting {payload_path} to {temp_dir}")
-        with tarfile.open(payload_path, "r:gz") as tar:
-            tar.extractall(temp_dir)
-        
-        # Find the extracted directory (should be the first directory in the tarball)
-        extracted_items = os.listdir(temp_dir)
-        if len(extracted_items) == 1 and os.path.isdir(os.path.join(temp_dir, extracted_items[0])):
-            extracted_path = os.path.join(temp_dir, extracted_items[0])
-        else:
-            # Multiple items or unexpected structure - use temp_dir itself
-            extracted_path = temp_dir
-        
-        logger.debug(f"Extracted to: {extracted_path}")
-        return extracted_path
+        """Extract tarball to temporary directory if payload is a .tar.gz file (delegates to ResourceManager)."""
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        return self.resource_manager.extract_tarball_if_needed(payload_path, config_dir)
     
     def _resolve_commit_reference(self, repo_path: str, commit: Optional[str] = None) -> Optional[str]:
-        """Resolve a commit reference (branch name, tag, short SHA) to a full SHA.
-        
-        Returns the full SHA if successful, or the original commit string if resolution fails.
-        """
-        if not commit or commit == "HEAD" or len(commit) == 40:
-            # HEAD, None, or already a full SHA - return as-is
-            return commit
-        
-        # Try to resolve using git rev-parse (handles branch names, tags, short SHAs)
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", commit],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                check=True,
-                timeout=5
-            )
-            return result.stdout.strip()
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            # Resolution failed - return original (let implementation handle it)
-            return commit
+        """Resolve a commit reference (branch name, tag, short SHA) to a full SHA (delegates to GitManager)."""
+        return self.git_manager.resolve_commit(repo_path, commit)
     
     def _run_single_test(self, implementation: SwhidImplementation, payload_path: str, 
                          payload_name: str, category: Optional[str] = None, 
                          commit: Optional[str] = None, tag: Optional[str] = None,
                          version: Optional[int] = None, hash_algo: Optional[str] = None) -> SwhidTestResult:
+        """Run a single test (delegates to TestRunner)."""
+        if self.test_runner is None:
+            # Initialize test runner if not already done
+            self.test_runner = TestRunner(
+                self.config, self.config_path, self.implementations,
+                self.resource_manager, self.git_manager
+            )
+        return self.test_runner.run_single_test(
+            implementation, payload_path, payload_name, category,
+            commit, tag, version, hash_algo
+        )
         """Run a single test for one implementation."""
         start_time = time.time()
         
         try:
             # Extract tarball if needed
-            actual_payload_path = self._extract_tarball_if_needed(payload_path)
+            config_dir = os.path.dirname(os.path.abspath(self.config_path))
+            actual_payload_path = self.resource_manager.extract_tarball_if_needed(payload_path, config_dir)
             
             # Determine object type from category if available, otherwise auto-detect
             if category:
@@ -346,36 +271,17 @@ class SwhidHarness:
         expected_tags = expected_config.get("tags", {}) or {}
         
         # Extract tarball if needed
-        actual_repo_path = self._extract_tarball_if_needed(repo_path)
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        actual_repo_path = self.resource_manager.extract_tarball_if_needed(repo_path, config_dir)
         
         if not os.path.exists(actual_repo_path):
             logger.warning(f"Repository not found: {actual_repo_path}")
             return all_results
         
-        # Discover branches
+                # Discover branches
         if discover_branches:
             try:
-                result = subprocess.run(
-                    ["git", "branch", "-a"],
-                    cwd=actual_repo_path,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    check=True,
-                    timeout=10
-                )
-                branches = []
-                for line in result.stdout.strip().split('\n'):
-                    branch = line.strip().lstrip('*').strip()
-                    # Remove remote prefix and filter out HEAD
-                    if branch.startswith('remotes/'):
-                        branch = branch.replace('remotes/origin/', '').replace('remotes/', '')
-                    if branch and branch != 'HEAD' and not branch.startswith('remotes/'):
-                        branches.append(branch)
-                
-                # Remove duplicates and sort
-                branches = sorted(set(branches))
+                branches = self.git_manager.get_branches(actual_repo_path)
                 logger.info(f"Discovered {len(branches)} branches in {base_name}: {', '.join(branches)}")
                 
                 # Test each branch as a revision
@@ -384,7 +290,7 @@ class SwhidHarness:
                     logger.info(f"Testing branch '{branch}' as revision: {test_name}")
                     
                     results = {}
-                    with ThreadPoolExecutor(max_workers=self.config["settings"]["parallel_tests"]) as executor:
+                    with ThreadPoolExecutor(max_workers=self.config.settings.parallel_tests) as executor:
                         future_to_impl = {
                             executor.submit(self._run_single_test, impl, actual_repo_path, test_name, 
                                           category="revision", commit=branch): impl
@@ -465,39 +371,7 @@ class SwhidHarness:
         # Discover annotated tags
         if discover_tags:
             try:
-                result = subprocess.run(
-                    ["git", "tag", "-l"],
-                    cwd=actual_repo_path,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    check=True,
-                    timeout=10
-                )
-                all_tags = [tag.strip() for tag in result.stdout.strip().split('\n') if tag.strip()]
-                
-                # Filter to only annotated tags
-                annotated_tags = []
-                for tag in all_tags:
-                    try:
-                        tag_type_result = subprocess.run(
-                            ["git", "cat-file", "-t", tag],
-                            cwd=actual_repo_path,
-                            capture_output=True,
-                            text=True,
-                            encoding='utf-8',
-                            errors='replace',
-                            check=True,
-                            timeout=5
-                        )
-                        if tag_type_result.stdout.strip() == "tag":
-                            annotated_tags.append(tag)
-                    except subprocess.CalledProcessError:
-                        # Skip if we can't determine type
-                        continue
-                
-                annotated_tags = sorted(annotated_tags)
+                annotated_tags = self.git_manager.get_annotated_tags(actual_repo_path)
                 logger.info(f"Discovered {len(annotated_tags)} annotated tags in {base_name}: {', '.join(annotated_tags)}")
                 
                 # Test each annotated tag as a release
@@ -506,7 +380,7 @@ class SwhidHarness:
                     logger.info(f"Testing annotated tag '{tag}' as release: {test_name}")
                     
                     results = {}
-                    with ThreadPoolExecutor(max_workers=self.config["settings"]["parallel_tests"]) as executor:
+                    with ThreadPoolExecutor(max_workers=self.config.settings.parallel_tests) as executor:
                         future_to_impl = {
                             executor.submit(self._run_single_test, impl, actual_repo_path, test_name, 
                                           category="release", tag=tag): impl
@@ -587,91 +461,18 @@ class SwhidHarness:
         return all_results
     
     def _is_unsupported_result(self, result: SwhidTestResult) -> bool:
-        """Return True if the result represents an unsupported object type."""
-        if result.success:
-            return False
-        if not result.error:
-            return False
-        err = str(result.error).lower()
-        return "object type" in err and "not support" in err
+        """Return True if the result represents an unsupported object type (delegates to ResultComparator)."""
+        return self.comparator.is_unsupported_result(result)
     
     def _compare_results(self, payload_name: str, payload_path: str,
                         results: Dict[str, SwhidTestResult], 
                         expected_swhid: Optional[str] = None,
                         expected_swhid_sha256: Optional[str] = None,
                         expected_error: Optional[str] = None) -> ComparisonResult:
-        """Compare results across implementations."""
-        supported_results = {
-            name: result for name, result in results.items()
-            if not self._is_unsupported_result(result)
-        }
-        
-        if not supported_results:
-            all_unsupported = results and all(self._is_unsupported_result(r) for r in results.values())
-            if all_unsupported:
-                return ComparisonResult(
-                    payload_name=payload_name,
-                    payload_path=payload_path,
-                    results=results,
-                    all_match=True,
-                    expected_swhid=expected_swhid
-                )
-            # Fall through to regular comparison (e.g., missing payloads)
-            supported_results = results
-        
-        # Handle negative tests: if expected_error is set, all supporting implementations should fail
-        if expected_error and supported_results:
-            all_failed = all(not r.success for r in supported_results.values())
-            if all_failed:
-                # All supporting implementations correctly rejected the invalid input
-                return ComparisonResult(
-                    payload_name=payload_name,
-                    payload_path=payload_path,
-                    results=results,
-                    all_match=True,
-                    expected_swhid=expected_swhid,
-                    expected_swhid_sha256=expected_swhid_sha256
-                )
-        
-        # Check if all implementations succeeded
-        all_success = all(r.success for r in supported_results.values())
-        
-        if not all_success:
-            return ComparisonResult(
-                payload_name=payload_name,
-                payload_path=payload_path,
-                results=results,
-                all_match=False,
-                expected_swhid=expected_swhid,
-                expected_swhid_sha256=expected_swhid_sha256
-            )
-        
-        # Get all SWHIDs, grouped by version
-        v1_swhids = [r.swhid for r in supported_results.values() 
-                     if r.swhid and r.version == 1]
-        v2_swhids = [r.swhid for r in supported_results.values() 
-                     if r.swhid and r.version == 2]
-        
-        # Check if all SWHIDs match within each version group
-        v1_match = len(set(v1_swhids)) == 1 if v1_swhids else True  # True if no v1 results
-        v2_match = len(set(v2_swhids)) == 1 if v2_swhids else True  # True if no v2 results
-        
-        all_match = v1_match and v2_match
-        
-        # Check against expected SWHIDs if provided
-        if all_match:
-            if v1_swhids and expected_swhid:
-                all_match = v1_swhids[0] == expected_swhid
-            if v2_swhids and expected_swhid_sha256:
-                all_match = all_match and (v2_swhids[0] == expected_swhid_sha256)
-        
-        return ComparisonResult(
-            payload_name=payload_name,
-            payload_path=payload_path,
-            results=results,
-            all_match=all_match,
-            expected_swhid=expected_swhid,
-            expected_swhid_sha256=expected_swhid_sha256
+        """Compare results across implementations (delegates to ResultComparator)."""
+        return self.comparator.compare_results(
+            payload_name, payload_path, results,
+            expected_swhid, expected_swhid_sha256, expected_error
         )
     
     def run_tests(self, implementations: Optional[List[str]] = None,
@@ -688,43 +489,52 @@ class SwhidHarness:
             logger.error("No implementations available")
             return []
         
+        # Initialize test runner and output generator with loaded implementations
+        self.test_runner = TestRunner(
+            self.config, self.config_path, self.implementations,
+            self.resource_manager, self.git_manager
+        )
+        self.output_generator = OutputGenerator(
+            self.implementations, self._get_implementation_git_sha
+        )
+        
         if categories is None:
-            categories = list(self.config["payloads"].keys())
+            categories = list(self.config.payloads.keys())
         
         all_results = []
         
         for category in sorted(categories):  # Deterministic ordering
-            if category not in self.config["payloads"]:
+            if category not in self.config.payloads:
                 logger.warning(f"Category '{category}' not found in config")
                 continue
-                
+            
             logger.info(f"Testing category: {category}")
             
             # Sort payloads deterministically by name
-            category_payloads = sorted(self.config["payloads"][category], key=lambda p: p.get("name", p.get("path", "")))
+            category_payloads = sorted(self.config.payloads[category], key=lambda p: p.name or p.path)
             
             # Filter by payload names if specified
             if payloads:
-                category_payloads = [p for p in category_payloads if p.get("name") in payloads]
+                category_payloads = [p for p in category_payloads if p.name in payloads]
                 if not category_payloads:
                     logger.info(f"No matching payloads found in category '{category}' for filter: {payloads}")
                     continue
             
             for payload in category_payloads:
-                payload_path = payload["path"]
+                payload_path = payload.path
                 # Resolve to absolute path relative to config file directory
                 if not os.path.isabs(payload_path):
                     config_dir = os.path.dirname(os.path.abspath(self.config_path))
                     payload_path = os.path.join(config_dir, payload_path)
-                payload_name = payload["name"]
-                expected_swhid = payload.get("expected_swhid")
-                expected_swhid_sha256 = payload.get("expected_swhid_sha256")
+                payload_name = payload.name
+                expected_swhid = payload.expected_swhid
+                expected_swhid_sha256 = payload.expected_swhid_sha256
                 
                 # Determine which version(s) to test
                 # Priority: CLI flags > payload rust_config > expected values presence
-                rust_config = payload.get("rust_config", {})
-                payload_version = rust_config.get("version")
-                payload_hash = rust_config.get("hash")
+                rust_config = payload.rust_config
+                payload_version = rust_config.version if rust_config else None
+                payload_hash = rust_config.hash if rust_config else None
                 
                 # CLI flags override config
                 if version is not None:
@@ -761,7 +571,7 @@ class SwhidHarness:
                             if os.path.exists(os.path.join(payload_path, ".git")):
                                 shutil.rmtree(payload_path)
                                 os.makedirs(payload_path, exist_ok=True)
-                        self._create_minimal_git_repo(payload_path)
+                        self.git_manager.create_minimal_git_repo(payload_path)
                         logger.info(f"Created/recreated synthetic git payload at: {payload_path}")
                     except Exception as e:
                         logger.warning(f"Failed to create synthetic git payload at: {payload_path}")
@@ -773,15 +583,11 @@ class SwhidHarness:
                     if os.path.exists(payload_path):
                         # Check if it's actually a Git repository
                         git_dir = os.path.join(payload_path, ".git")
-                        is_git_repo = os.path.exists(git_dir) or (
-                            os.path.exists(os.path.join(payload_path, "HEAD")) and
-                            os.path.exists(os.path.join(payload_path, "refs")) and
-                            os.path.exists(os.path.join(payload_path, "objects"))
-                        )
+                        is_git_repo = self.git_manager.check_is_repository(payload_path)
                     
                     if not is_git_repo:
                         try:
-                            self._create_minimal_git_repo(payload_path)
+                            self.git_manager.create_minimal_git_repo(payload_path)
                             logger.info(f"Created synthetic git payload at: {payload_path}")
                         except Exception as e:
                             logger.warning(f"Failed to create synthetic git payload at: {payload_path}")
@@ -808,8 +614,8 @@ class SwhidHarness:
                             )
                         )
                     # Create comparison result with SKIPPED status
-                    expected_error = payload.get("expected_error")
-                    expected_swhid_sha256 = payload.get("expected_swhid_sha256")
+                    expected_error = payload.expected_error
+                    expected_swhid_sha256 = payload.expected_swhid_sha256
                     comparison = ComparisonResult(
                         payload_name=payload_name,
                         payload_path=payload_path,
@@ -824,24 +630,31 @@ class SwhidHarness:
                 logger.info(f"Testing payload: {payload_name}")
                 
                 # Check if we should discover branches/tags
-                discover_branches = payload.get("discover_branches", False)
-                discover_tags = payload.get("discover_tags", False)
+                discover_branches = payload.discover_branches
+                discover_tags = payload.discover_tags
                 
                 if discover_branches or discover_tags:
                     # Generate test cases for discovered branches/tags
-                    expected_config = payload.get("expected", {})
+                    expected_config = payload.expected
+                    if expected_config:
+                        expected_config_dict = {
+                            "branches": expected_config.branches,
+                            "tags": expected_config.tags
+                        }
+                    else:
+                        expected_config_dict = {}
                     discovered_tests = self._discover_git_tests(payload_path, payload_name, 
-                                                                 discover_branches, discover_tags, expected_config)
+                                                                 discover_branches, discover_tags, expected_config_dict)
                     all_results.extend(discovered_tests)
                     continue
                 
                 # Get commit/tag metadata for revision/release tests
-                commit = payload.get("commit")
-                tag = payload.get("tag")
+                commit = payload.commit
+                tag = payload.tag
                 
                 # Run tests for all implementations and all versions
                 results = {}
-                with ThreadPoolExecutor(max_workers=self.config["settings"]["parallel_tests"]) as executor:
+                with ThreadPoolExecutor(max_workers=self.config.settings.parallel_tests) as executor:
                     futures = []
                     for impl in self.implementations.values():
                         for test_version in test_versions:
@@ -851,7 +664,7 @@ class SwhidHarness:
                                 version_hash = test_hash or "sha256"
                             
                             future = executor.submit(
-                                self._run_single_test,
+                                self.test_runner.run_single_test,
                                 impl,
                                 payload_path,
                                 payload_name,
@@ -875,7 +688,7 @@ class SwhidHarness:
                             logger.error(f"Error running test for {impl.get_info().name} (v{test_version}): {e}")
                 
                 # Compare results
-                expected_error = payload.get("expected_error")
+                expected_error = payload.expected_error
                 comparison = self._compare_results(
                     payload_name,
                     payload_path,
@@ -948,70 +761,8 @@ class SwhidHarness:
         return all_results
 
     def _create_minimal_git_repo(self, repo_path: str):
-        """Create a small git repository with one commit, one tag, and default HEAD.
-        This is used to test snapshot identifiers.
-        
-        Uses fixed timestamps to ensure deterministic commit hashes across runs.
-        All operations use fixed dates and explicit configurations for reproducibility.
-        """
-        import subprocess
-        import pathlib
-        import os
-        path = pathlib.Path(repo_path)
-        path.mkdir(parents=True, exist_ok=True)
-
-        # Fixed timestamp for deterministic commits and tags
-        # Use Unix timestamp format like Git's test suite (1112911993 = 2005-04-07)
-        test_tick = 1112911993
-        env = os.environ.copy()
-        env["TZ"] = "UTC"
-
-        # Initialize repo with explicit default branch name for consistency
-        subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
-        # Configure user (required for commits)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_path, check=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True)
-        # Disable GPG signing for commits and tags to ensure deterministic objects
-        subprocess.run(["git", "config", "commit.gpgSign", "false"], cwd=repo_path, check=True)
-        subprocess.run(["git", "config", "tag.gpgSign", "false"], cwd=repo_path, check=True)
-        
-        # Configure Git for cross-platform consistency (critical for Windows)
-        # This ensures line endings, Unicode, and file modes are handled consistently
-        subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "core.filemode", "true"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "config", "core.precomposeunicode", "false"], cwd=repo_path, check=True, capture_output=True)
-
-        # Create a file and commit (first timestamp)
-        # Write files in binary mode with explicit LF line endings and UTF-8 encoding
-        # to ensure cross-platform consistency (pathlib.write_text() may use CRLF on Windows)
-        env["GIT_AUTHOR_DATE"] = f"{test_tick} +0000"
-        env["GIT_COMMITTER_DATE"] = f"{test_tick} +0000"
-        with open(path / "README.md", "wb") as f:
-            f.write("# Sample Repo\n".encode("utf-8"))
-        subprocess.run(["git", "add", "README.md"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_path, check=True,
-                      capture_output=True, env=env)
-
-        # Create a branch 'feature' and second commit (increment timestamp)
-        test_tick += 60
-        env["GIT_AUTHOR_DATE"] = f"{test_tick} +0000"
-        env["GIT_COMMITTER_DATE"] = f"{test_tick} +0000"
-        subprocess.run(["git", "checkout", "-b", "feature"], cwd=repo_path, check=True, capture_output=True)
-        with open(path / "FEATURE.txt", "wb") as f:
-            f.write("feature\n".encode("utf-8"))
-        subprocess.run(["git", "add", "FEATURE.txt"], cwd=repo_path, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Add feature"], cwd=repo_path, check=True,
-                      capture_output=True, env=env)
-
-        # Switch back to main
-        subprocess.run(["git", "checkout", "-B", "main"], cwd=repo_path, check=True, capture_output=True)
-
-        # Create an annotated tag (increment timestamp)
-        test_tick += 60
-        env["GIT_AUTHOR_DATE"] = f"{test_tick} +0000"
-        env["GIT_COMMITTER_DATE"] = f"{test_tick} +0000"
-        subprocess.run(["git", "tag", "-a", "v1.0", "-m", "Release v1.0"], cwd=repo_path, check=True,
-                      capture_output=True, env=env)
+        """Create a small git repository (delegates to GitManager)."""
+        self.git_manager.create_minimal_git_repo(repo_path)
     
     def generate_expected_results(self, implementation: str = "python"):
         """Generate expected results using a reference implementation."""
@@ -1023,7 +774,11 @@ class SwhidHarness:
             logger.error(f"Reference implementation '{implementation}' not found")
             return
         
-        for category, payloads in self.config["payloads"].items():
+        # Note: generate_expected_results modifies the config file directly
+        # We need to work with the dict representation for YAML serialization
+        config_dict = self.config.model_dump(mode='python')
+        
+        for category, payloads in config_dict["payloads"].items():
             for payload in payloads:
                 payload_path = payload["path"]
                 # Resolve to absolute path relative to config file directory
@@ -1066,217 +821,19 @@ class SwhidHarness:
         
         # Save updated config
         with open(self.config_path, 'w') as f:
-            yaml.dump(self.config, f, default_flow_style=False)
+            yaml.dump(config_dict, f, default_flow_style=False)
+        
+        # Reload config to reflect changes
+        self.config = HarnessConfig.load_from_file(self.config_path)
     
     def get_canonical_results(self, results: List[ComparisonResult], branch: str = "main", commit: str = "unknown") -> HarnessResults:
-        """Generate canonical format results."""
-        # Create run info
-        now = datetime.utcnow()
-        run_info = RunInfo(
-            id=make_run_id(),
-            created_at=now,
-            branch=branch,
-            commit=commit,
-            runner=get_runner_info()
-        )
-        
-        # Create implementation metadata
-        implementations = []
-        for impl_name, impl in self.implementations.items():
-            impl_info = impl.get_info()
-            capabilities = impl.get_capabilities()
-            
-            # Convert capabilities dataclass to Pydantic model
-            capabilities_model = ImplementationCapabilitiesModel(
-                supported_types=capabilities.supported_types,
-                supported_qualifiers=capabilities.supported_qualifiers,
-                api_version=capabilities.api_version,
-                max_payload_size_mb=capabilities.max_payload_size_mb,
-                supports_unicode=capabilities.supports_unicode,
-                supports_percent_encoding=capabilities.supports_percent_encoding
+        """Generate canonical format results (delegates to OutputGenerator)."""
+        if self.output_generator is None:
+            # Initialize if not already done
+            self.output_generator = OutputGenerator(
+                self.implementations, self._get_implementation_git_sha
             )
-            
-            # Try to get git SHA for implementation
-            git_sha = self._get_implementation_git_sha(impl_name, impl_info)
-            
-            # Build toolchain info
-            toolchain = {"python": platform.python_version()}
-            if impl_info.language:
-                toolchain["language"] = impl_info.language
-            
-            implementations.append(Implementation(
-                id=impl_name,
-                version=impl_info.version,
-                git_sha=git_sha,
-                git=git_sha,  # Legacy field
-                language=impl_info.language,
-                api_version=capabilities.api_version,
-                capabilities=capabilities_model,
-                toolchain=toolchain
-            ))
-        
-        # Create test cases
-        test_cases = []
-        for result in results:
-            # Determine category from payload path (distinguish basic vs edge_cases)
-            category = "unknown"
-            payload_path_normalized = result.payload_path.replace("\\", "/")
-            if "/content/" in payload_path_normalized:
-                category = "content/edge_cases" if "/edge_cases/" in payload_path_normalized else "content/basic"
-            elif "/directory/" in payload_path_normalized:
-                category = "directory/edge_cases" if "/edge_cases/" in payload_path_normalized else "directory/basic"
-            elif "archive" in payload_path_normalized:
-                category = "archive/basic"
-            elif "git" in payload_path_normalized:
-                category = "git/basic"
-            elif "negative" in payload_path_normalized:
-                category = "negative"
-            
-            # Create expected reference (include both v1 and v2 expected values)
-            expected = ExpectedRef(
-                reference_impl="python-swhid",  # Default reference
-                swhid=result.expected_swhid,
-                expected_swhid_sha256=result.expected_swhid_sha256
-            )
-            
-            # Create results for each implementation
-            test_results = []
-            for impl_name, test_result in result.results.items():
-                # Determine status
-                if not test_result.success:
-                    # Check if this is a SKIPPED case (missing payload or unsupported type)
-                    error_str = str(test_result.error)
-                    # Check for various "unsupported" error patterns
-                    is_skipped = (
-                        "Payload file not found" in error_str or 
-                        "not supported by implementation" in error_str or
-                        "Object type not supported" in error_str or
-                        any(phrase in error_str.lower() for phrase in [
-                            "doesn't support", "does not support", 
-                            "not support", "unsupported"
-                        ])
-                    )
-                    if is_skipped:
-                        status = "SKIPPED"
-                        if "file not found" in error_str.lower() or "Payload file not found" in error_str:
-                            error = ErrorInfo(
-                                code="IO_ERROR",
-                                subtype="file_not_found",
-                                message=error_str,
-                                context={}
-                            )
-                        else:
-                            error = ErrorInfo(
-                                code="VALIDATION_ERROR",
-                                subtype="unsupported_type",
-                                message=error_str,
-                                context={}
-                            )
-                        swhid = None
-                    else:
-                        status = "FAIL"
-                        # Map exception to appropriate ErrorCode
-                        error_code, error_subtype = self._classify_error(test_result.error)
-                        error = ErrorInfo(
-                            code=error_code,
-                            subtype=error_subtype,
-                            message=str(test_result.error),
-                            context={}
-                        )
-                        swhid = None
-                else:
-                    # Determine which expected value to use based on result version
-                    expected_swhid_to_check = None
-                    if test_result.version == 2:
-                        expected_swhid_to_check = result.expected_swhid_sha256
-                    else:
-                        expected_swhid_to_check = result.expected_swhid
-                    
-                    # Check against appropriate expected value
-                    if expected_swhid_to_check and test_result.swhid != expected_swhid_to_check:
-                        status = "FAIL"
-                        # Create structured diff
-                        diff = [
-                            DiffEntry(
-                                path="/swhid",
-                                expected=expected_swhid_to_check,
-                                actual=test_result.swhid,
-                                category="value_mismatch"
-                            )
-                        ]
-                        error = ErrorInfo(
-                            code="MISMATCH_ERROR",
-                            subtype="swhid",
-                            message="SWHID mismatch",
-                            context={
-                                "got": test_result.swhid,
-                                "expected": expected_swhid_to_check
-                            },
-                            diff=diff
-                        )
-                        swhid = test_result.swhid
-                    else:
-                        status = "PASS"
-                        error = None
-                        swhid = test_result.swhid
-                
-                # Create metrics
-                metrics = Metrics(
-                    samples=1,
-                    wall_ms_median=round(test_result.duration * 1000, 3),
-                    wall_ms_mad=0.0,
-                    cpu_ms_median=round(test_result.duration * 1000, 3),
-                    max_rss_kb=test_result.metrics.max_rss_kb if test_result.metrics else None
-                )
-                
-                test_results.append(Result(
-                    implementation=impl_name,
-                    status=status,
-                    error=error,
-                    metrics=metrics,
-                    swhid=swhid
-                ))
-            
-            test_cases.append(TestCase(
-                id=result.payload_name,
-                category=category,
-                payload_ref=result.payload_path,
-                expected=expected,
-                results=test_results
-            ))
-        
-        # Calculate aggregates
-        aggregates_data = {}
-        for impl_name in self.implementations.keys():
-            passed = sum(
-                1 for tc in test_cases for r in tc.results 
-                if r.implementation == impl_name and r.status == "PASS"
-            )
-            failed = sum(
-                1 for tc in test_cases for r in tc.results 
-                if r.implementation == impl_name and r.status == "FAIL"
-            )
-            skipped = sum(
-                1 for tc in test_cases for r in tc.results 
-                if r.implementation == impl_name and r.status == "SKIPPED"
-            )
-            aggregates_data[impl_name] = {
-                "passed": passed,
-                "failed": failed,
-                "skipped": skipped
-            }
-        
-        aggregates = Aggregates(by_implementation=aggregates_data)
-        
-        return HarnessResults(
-            schema_version="1.0.0",
-            schema_extensions=[],  # No experimental fields yet
-            run=run_info,
-            run_environment=run_info.runner,  # Also include at top level for compatibility
-            implementations=implementations,
-            tests=test_cases,
-            aggregates=aggregates
-        )
+        return self.output_generator.get_canonical_results(results, branch, commit)
     
     def _print_summary(self, canonical_results: HarnessResults):
         """Print enhanced summary with per-implementation and global statistics."""
@@ -1601,13 +1158,25 @@ class SwhidHarness:
         
         return None
     
-    def _classify_error(self, error: str) -> tuple[str, str]:
+    def _classify_error(self, error: Any) -> tuple[str, str]:
         """
-        Classify error string into ErrorCode and subtype.
+        Classify error into ErrorCode and subtype.
         
+        If error is a SwhidHarnessError, extract error code and subtype.
+        Otherwise, classify based on error message string.
+        
+        Args:
+            error: Exception instance or error string
+            
         Returns:
             Tuple of (error_code, subtype)
         """
+        # If it's already a SwhidHarnessError, extract the error code
+        if isinstance(error, SwhidHarnessError):
+            if error.error_code:
+                return (error.error_code.value, error.subtype or "generic")
+            # Fall through to string classification
+        
         error_str = str(error).lower()
         
         # Timeout errors
@@ -1763,12 +1332,12 @@ def main():
     
     if args.list_payloads:
         print("Available test payloads:")
-        for category, payloads in sorted(harness.config["payloads"].items()):
+        for category, payloads in sorted(harness.config.payloads.items()):
             print(f"\n  {category}:")
-            for payload in sorted(payloads, key=lambda p: p.get("name", "")):
-                name = payload.get("name", "unnamed")
-                path = payload.get("path", "")
-                expected = payload.get("expected_swhid")
+            for payload in sorted(payloads, key=lambda p: p.name or ""):
+                name = payload.name or "unnamed"
+                path = payload.path or ""
+                expected = payload.expected_swhid
                 status = "[PASS]" if expected else "[SKIP]"
                 print(f"    {status} {name}: {path}")
         return
