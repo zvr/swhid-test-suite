@@ -9,6 +9,7 @@ from typing import List, Dict, Callable, Tuple, Optional
 from datetime import datetime
 
 from .plugins.base import SwhidImplementation, ImplementationInfo, SwhidTestResult
+from .utils.constants import TestStatus, SWHID_V1_PREFIX, SWHID_V2_PREFIX
 from .models import (
     HarnessResults, RunInfo, RunnerInfo, Implementation, TestCase,
     ExpectedRef, Result, Metrics, ErrorInfo, Aggregates,
@@ -146,7 +147,7 @@ class OutputGenerator:
                 
                 test_results.append(Result(
                     implementation=impl_name,
-                    status=status,
+                    status=status.value if isinstance(status, TestStatus) else status,
                     error=error,
                     metrics=metrics,
                     swhid=swhid
@@ -198,7 +199,7 @@ class OutputGenerator:
                 ])
             )
             if is_skipped:
-                status = "SKIPPED"
+                status = TestStatus.SKIPPED
                 if "file not found" in error_str.lower() or "Payload file not found" in error_str:
                     error = ErrorInfo(
                         code="IO_ERROR",
@@ -215,7 +216,7 @@ class OutputGenerator:
                     )
                 return status, error, None
             else:
-                status = "FAIL"
+                status = TestStatus.FAIL
                 # Use harness's error classification (will be refactored later)
                 # For now, create a temporary harness instance just for classification
                 # This is a temporary workaround until error classification is extracted
@@ -237,7 +238,7 @@ class OutputGenerator:
             
             # Check against appropriate expected value
             if expected_swhid_to_check and test_result.swhid != expected_swhid_to_check:
-                status = "FAIL"
+                status = TestStatus.FAIL
                 diff = [
                     DiffEntry(
                         path="/swhid",
@@ -258,7 +259,7 @@ class OutputGenerator:
                 )
                 return status, error, test_result.swhid
             else:
-                status = "PASS"
+                status = TestStatus.PASS
                 return status, None, test_result.swhid
     
     def _classify_error_string(self, error_str: str) -> Tuple[str, str]:

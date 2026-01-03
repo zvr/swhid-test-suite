@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .plugins.base import SwhidImplementation, SwhidTestResult, TestMetrics
 from .config import HarnessConfig, PayloadConfig
-from .utils.constants import obj_type_to_swhid_code
+from .utils.constants import obj_type_to_swhid_code, SWHID_V1_PREFIX, SWHID_V2_PREFIX
 from .utils.git_utils import resolve_commit_reference
 from .git_manager import GitManager
 from .resource_manager import ResourceManager
@@ -136,9 +136,9 @@ class TestRunner:
             # Determine SWHID version from result
             if version is not None:
                 result_version = version
-            elif swhid and swhid.startswith("swh:2:"):
+            elif swhid and swhid.startswith(SWHID_V2_PREFIX):
                 result_version = 2
-            elif swhid and swhid.startswith("swh:1:"):
+            elif swhid and swhid.startswith(SWHID_V1_PREFIX):
                 result_version = 1
             else:
                 result_version = 1
