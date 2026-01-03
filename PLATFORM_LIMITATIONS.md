@@ -2,11 +2,15 @@
 
 This document describes known platform limitations and expected test skips for the SWHID Testing Harness.
 
+**Current Test Suite Status**: See the [live test results dashboard](https://www.swhid.org/test-suite/) for up-to-date statistics across all platforms and implementations.
+
 ## Expected Test Skips
+
+**Note**: The test suite currently includes 79 tests per implementation. Skip counts are based on the latest test run data.
 
 ### Git and Git-CMD Implementations
 
-**18 skips** - Snapshot objects are not supported by Git-based implementations.
+**17 skips** (78.5% pass rate: 62/79 tests) - Snapshot objects are not supported by Git-based implementations.
 
 Git implementations (both `git` and `git-cmd`) compute SWHIDs using Git's hashing algorithm, which supports:
 - Content objects (`cnt`)
@@ -15,6 +19,8 @@ Git implementations (both `git` and `git-cmd`) compute SWHIDs using Git's hashin
 - Release objects (`rel`)
 
 However, Git does not have a native concept of snapshots (`snp`), which are Software Heritage-specific objects that represent the state of a repository at a point in time. Therefore, all snapshot tests are skipped for Git implementations.
+
+**Current status**: Both implementations show consistent 78.5% pass rate (62/79 pass, 17 skip) across all platforms (Ubuntu, Windows, macOS).
 
 **Affected tests:**
 - `alias_branches`
@@ -33,7 +39,7 @@ However, Git does not have a native concept of snapshots (`snp`), which are Soft
 
 ### Python Implementation
 
-**36 skips** - Revision and release objects are not supported by the Python `swh.model.cli` implementation.
+**35 skips** (55.7% pass rate: 44/79 tests) - Revision and release objects are not supported by the Python `swh.model.cli` implementation.
 
 The Python implementation via `swh.model.cli` supports:
 - Content objects (`cnt`)
@@ -48,15 +54,22 @@ However, it does not support:
 - All revision tests (e.g., `simple_revision`, `simple_revisions_head`, `merge_revision`)
 - All release tests (e.g., `annotated_release_v1`, `signed_release_v1`, `comprehensive_tag_v1.0.0`)
 
+**Current status**: 55.7% pass rate (44/79 pass, 35 skip) on Ubuntu and macOS. Not available on Windows.
+
 See `implementations/python/implementation.py` lines 69-72 for the implementation.
 
-### Rust and Ruby Implementations
+### Rust Implementation
 
-**1 skip each** - These are typically negative tests or edge cases that may not be handled by the external tools.
+**0 skips** (100% pass rate: 79/79 tests) - Full support across all platforms.
 
-The specific skip may vary, but common cases include:
-- Negative tests (e.g., `nonexistent_file`) if the implementation doesn't handle error cases
-- Edge cases that the external tool doesn't support
+The Rust implementation using `swhid-rs` binary provides complete coverage:
+- Content objects (`cnt`)
+- Directory objects (`dir`)
+- Revision objects (`rev`)
+- Release objects (`rel`)
+- Snapshot objects (`snp`)
+
+**Current status**: 100% pass rate (79/79 pass) on all platforms (Ubuntu, Windows, macOS). This is the reference implementation with full cross-platform support.
 
 ## Windows-Specific Issues
 
@@ -103,6 +116,15 @@ Test files with CRLF or mixed line endings are preserved as-is. The implementati
 - Uses Git command-line tools
 - Configures `core.autocrlf=false` and `core.filemode=true` in test repositories
 - Uses `git update-index --chmod=+x` to set executable bits on Windows
+- **Current status**: 78.5% pass rate (62/79 pass, 17 skip) across all platforms
+
+### PyGit2 Implementation
+
+- Uses libgit2 via pygit2 Python bindings
+- **Current status**: 
+  - Ubuntu/macOS: 78.5% pass rate (62/79 pass, 17 skip)
+  - Windows: 74.7% pass rate (59/79 pass, 3 fail, 17 skip)
+- **Windows-specific issues**: 3 test failures on Windows (likely related to permission handling or path resolution)
 
 ### Rust Implementation
 
@@ -115,6 +137,10 @@ Test files with CRLF or mixed line endings are preserved as-is. The implementati
 - Uses external `swhid` gem
 - Reads content files in binary mode and passes via stdin
 - Creates temporary copies with preserved permissions on Windows
+
+**Current status**:
+- Ubuntu/macOS: 100% pass rate (79/79 pass)
+- Windows: 92.4% pass rate (73/79 pass, 6 fail)
 
 **Known Windows Limitations (6 failures):**
 
@@ -144,10 +170,29 @@ Test files with CRLF or mixed line endings are preserved as-is. The implementati
 - Does not support revision or release object types
 - Limited to content, directory, and snapshot objects
 
+## Current Test Suite Statistics
+
+Based on the latest test run data from the [test suite dashboard](https://www.swhid.org/test-suite/):
+
+- **Total tests**: 79 per implementation
+- **Overall pass rate**: ~78-85% depending on platform
+- **Platform breakdown**:
+  - Ubuntu: 81.9% pass (388/474 total tests across all implementations)
+  - Windows: 84.8% pass (335/395 total tests), 2.3% fail (9 failures)
+  - macOS: 81.9% pass (388/474 total tests)
+
+**Implementation summary**:
+- **Rust**: 100% pass on all platforms (79/79)
+- **Ruby**: 100% pass on Ubuntu/macOS (79/79), 92.4% on Windows (73/79, 6 fail)
+- **Git/Git-CMD**: 78.5% pass on all platforms (62/79, 17 skip)
+- **PyGit2**: 78.5% pass on Ubuntu/macOS (62/79, 17 skip), 74.7% on Windows (59/79, 3 fail, 17 skip)
+- **Python**: 55.7% pass on Ubuntu/macOS (44/79, 35 skip), not available on Windows
+
 ## Testing Recommendations
 
 1. **Windows Testing**: Ensure Developer Mode is enabled for symlink tests
 2. **Permission Tests**: Verify Git index contains correct permissions for test payloads
 3. **Line Ending Tests**: Ensure `.gitattributes` is respected and `core.autocrlf=false` is set
 4. **Cross-Platform**: Expected SWHIDs are computed on Unix; Windows may produce different results for permission-based tests if permissions aren't preserved correctly
+5. **Monitor Dashboard**: Check the [live test results dashboard](https://www.swhid.org/test-suite/) for up-to-date status across all platforms
 
