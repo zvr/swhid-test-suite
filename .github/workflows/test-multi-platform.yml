@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read
     outputs:
       changes_detected: ${{ steps.check-changes.outputs.changes_detected }}
     
@@ -45,27 +46,68 @@ jobs:
         with:
           script: |
             try {
-              const workflowRuns = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: context.workflow,
-                status: 'success',
-                per_page: 2
-              });
+              // context.workflow returns the workflow name, not the file path
+              // We need to use the actual workflow file path
+              const workflowFile = '.github/workflows/test-multi-platform.yml';
               
-              if (workflowRuns.data.workflow_runs.length < 2) {
-                console.log('No previous successful run found');
+              // Try multiple ways to identify the workflow
+              const workflowIdentifiers = [
+                workflowFile,  // Full path to workflow file (most reliable)
+                'test-multi-platform.yml',  // Just filename
+                context.workflow,  // Workflow name (may not work)
+              ];
+              
+              console.log(`Current workflow context: ${context.workflow}`);
+              console.log(`Repository: ${context.repo.owner}/${context.repo.repo}`);
+              console.log(`Workflow file: ${workflowFile}`);
+              
+              let workflowRuns = null;
+              let lastError = null;
+              
+              // Try each workflow identifier
+              for (const workflowId of workflowIdentifiers) {
+                try {
+                  console.log(`Trying workflow_id: ${workflowId}`);
+                  workflowRuns = await github.rest.actions.listWorkflowRuns({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    workflow_id: workflowId,
+                    status: 'success',
+                    per_page: 2
+                  });
+                  
+                  if (workflowRuns.data.workflow_runs && workflowRuns.data.workflow_runs.length > 0) {
+                    console.log(`✓ Found ${workflowRuns.data.workflow_runs.length} workflow run(s) with identifier: ${workflowId}`);
+                    break;
+                  }
+                } catch (err) {
+                  console.log(`✗ Failed with ${workflowId}: ${err.message}`);
+                  lastError = err;
+                  continue;
+                }
+              }
+              
+              if (!workflowRuns || !workflowRuns.data.workflow_runs || workflowRuns.data.workflow_runs.length < 2) {
+                console.log('No previous successful run found (need at least 2 runs)');
+                if (workflowRuns && workflowRuns.data.workflow_runs) {
+                  console.log(`Found ${workflowRuns.data.workflow_runs.length} run(s), but need 2+ for comparison`);
+                }
                 core.setOutput('artifact_id', '');
                 return;
               }
               
               const previousRun = workflowRuns.data.workflow_runs[1];
-              console.log(`Found previous run: ${previousRun.id}`);
+              console.log(`Found previous run: ${previousRun.id} (created: ${previousRun.created_at})`);
               
               const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: previousRun.id
+              });
+              
+              console.log(`Found ${artifacts.data.artifacts.length} artifact(s) in previous run`);
+              artifacts.data.artifacts.forEach(a => {
+                console.log(`  - ${a.name} (${a.size_in_bytes} bytes, expires: ${a.expires_at})`);
               });
               
               const upstreamStateArtifact = artifacts.data.artifacts.find(a => a.name === 'upstream-state');
@@ -80,6 +122,7 @@ jobs:
               core.setOutput('artifact_id', upstreamStateArtifact.id.toString());
             } catch (error) {
               console.log(`Error finding previous run: ${error.message}`);
+              console.log(`Error stack: ${error.stack}`);
               core.setOutput('artifact_id', '');
             }
       
@@ -97,12 +140,46 @@ jobs:
             -o /tmp/upstream-state.zip
           
           if [ -f /tmp/upstream-state.zip ] && [ -s /tmp/upstream-state.zip ]; then
+            echo "Artifact downloaded successfully, size: $(wc -c < /tmp/upstream-state.zip) bytes"
+            unzip -l /tmp/upstream-state.zip || true
             unzip -q /tmp/upstream-state.zip -d /tmp/ 2>/dev/null || true
-            if [ -d /tmp/upstream-state ]; then
-              mv /tmp/upstream-state/* previous-state/ 2>/dev/null || true
-              rmdir /tmp/upstream-state 2>/dev/null || true
+            
+            # Debug: show what was extracted
+            echo "Contents of /tmp after extraction:"
+            find /tmp -name "*.txt" -o -name "current-state" -type d 2>/dev/null | head -20 || true
+            
+            # Artifact structure: GitHub Actions uploads from 'current-state/' directory
+            # The zip may contain files directly or in a subdirectory
+            # Try in order: direct files, nested structure, flat structure
+            if find /tmp -maxdepth 1 -name "*.txt" | grep -q .; then
+              echo "Found files directly in /tmp (flat zip structure)"
+              cp /tmp/*.txt previous-state/ 2>/dev/null || true
+            elif [ -d /tmp/upstream-state/current-state ]; then
+              echo "Found nested structure: /tmp/upstream-state/current-state"
+              cp -r /tmp/upstream-state/current-state/* previous-state/ 2>/dev/null || true
+            elif [ -d /tmp/current-state ]; then
+              echo "Found flat structure: /tmp/current-state"
+              cp -r /tmp/current-state/* previous-state/ 2>/dev/null || true
+            elif [ -d /tmp/upstream-state ]; then
+              echo "Found upstream-state directory"
+              # Check if files are directly in upstream-state or in a subdirectory
+              if find /tmp/upstream-state -maxdepth 1 -name "*.txt" | grep -q .; then
+                echo "Files directly in upstream-state"
+                cp /tmp/upstream-state/*.txt previous-state/ 2>/dev/null || true
+              else
+                # Look for any .txt files in subdirectories
+                find /tmp/upstream-state -name "*.txt" -exec cp {} previous-state/ \; 2>/dev/null || true
+              fi
+            else
+              echo "Warning: Could not find expected directory structure, searching recursively"
+              # Try to find any .txt files anywhere in /tmp (excluding hidden dirs)
+              find /tmp -name "*.txt" -not -path "*/.*" -exec cp {} previous-state/ \; 2>/dev/null || true
             fi
+            
             echo "Successfully downloaded previous state"
+            echo "Files in previous-state:"
+            ls -la previous-state/ || true
+            echo "File count: $(find previous-state -name '*.txt' | wc -l)"
           else
             echo "Failed to download artifact or artifact is empty"
             mkdir -p previous-state
@@ -129,11 +206,66 @@ jobs:
           SWHID_RS_REPO="swhid/swhid-rs"
           SWHID_RS_REF="main"
           # Get latest commit SHA from GitHub API
-          # Use GITHUB_TOKEN which is automatically available in GitHub Actions
-          CURRENT_SWHID_RS_SHA=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+          # Use SWHID_RS_TOKEN if available (for private repos or rate limits), fallback to GITHUB_TOKEN
+          SWHID_RS_TOKEN="${{ secrets.SWHID_RS_TOKEN }}"
+          if [ -z "$SWHID_RS_TOKEN" ] || [ "$SWHID_RS_TOKEN" = "" ]; then
+            SWHID_RS_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+            echo "Using GITHUB_TOKEN for swhid-rs API" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Using SWHID_RS_TOKEN for swhid-rs API" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Try to fetch commit SHA with better error handling
+          # Store response in temp file to handle both stdout and stderr
+          TEMP_RESPONSE=$(mktemp)
+          TEMP_ERROR=$(mktemp)
+          
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TEMP_RESPONSE" \
+            -H "Authorization: Bearer ${SWHID_RS_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${SWHID_RS_REPO}/commits/${SWHID_RS_REF}" 2>/dev/null | \
-            grep -o '"sha":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+            "https://api.github.com/repos/${SWHID_RS_REPO}/commits/${SWHID_RS_REF}" 2>"$TEMP_ERROR")
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            # Try multiple parsing methods
+            # Method 1: Direct grep for "sha" field
+            CURRENT_SWHID_RS_SHA=$(grep -o '"sha":"[^"]*"' "$TEMP_RESPONSE" | head -1 | cut -d'"' -f4 || echo "")
+            
+            # Method 2: If that fails, try with jq if available
+            if [ -z "$CURRENT_SWHID_RS_SHA" ] && command -v jq >/dev/null 2>&1; then
+              CURRENT_SWHID_RS_SHA=$(jq -r '.sha' "$TEMP_RESPONSE" 2>/dev/null || echo "")
+            fi
+            
+            # Method 3: Try extracting from any "sha" field in the JSON
+            if [ -z "$CURRENT_SWHID_RS_SHA" ]; then
+              CURRENT_SWHID_RS_SHA=$(grep -oE '"sha"\s*:\s*"[a-f0-9]{40}"' "$TEMP_RESPONSE" | head -1 | grep -oE '[a-f0-9]{40}' || echo "")
+            fi
+            
+            if [ -z "$CURRENT_SWHID_RS_SHA" ]; then
+              echo "⚠️ API returned 200 but could not parse SHA from response" >> $GITHUB_STEP_SUMMARY
+              echo "Response preview (first 200 chars): $(head -c 200 "$TEMP_RESPONSE")" >> $GITHUB_STEP_SUMMARY
+              # Check if response is valid JSON
+              if command -v jq >/dev/null 2>&1; then
+                if ! jq empty "$TEMP_RESPONSE" 2>/dev/null; then
+                  echo "Response is not valid JSON" >> $GITHUB_STEP_SUMMARY
+                fi
+              fi
+            fi
+          else
+            ERROR_MSG=$(cat "$TEMP_ERROR" 2>/dev/null || echo "Unknown error")
+            echo "⚠️ API returned HTTP $HTTP_CODE" >> $GITHUB_STEP_SUMMARY
+            if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+              echo "Authentication failed - token may be invalid or expired" >> $GITHUB_STEP_SUMMARY
+            elif [ "$HTTP_CODE" = "404" ]; then
+              echo "Repository or branch not found: ${SWHID_RS_REPO}#${SWHID_RS_REF}" >> $GITHUB_STEP_SUMMARY
+            elif [ "$HTTP_CODE" = "000" ]; then
+              echo "Network error or connection failed: $ERROR_MSG" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "Error: $ERROR_MSG" >> $GITHUB_STEP_SUMMARY
+            fi
+            CURRENT_SWHID_RS_SHA=""
+          fi
+          
+          rm -f "$TEMP_RESPONSE" "$TEMP_ERROR"
           
           if [ -n "$CURRENT_SWHID_RS_SHA" ]; then
             if [ -f previous-state/swhid-rs-sha.txt ]; then

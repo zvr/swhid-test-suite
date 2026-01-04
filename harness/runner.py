@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 class TestRunner:
     """Runs tests for SWHID implementations."""
     
+    __test__ = False  # Tell pytest this is not a test class
+    
     def __init__(
         self,
         config: HarnessConfig,

@@ -69,7 +69,23 @@ runs:
       shell: bash
       run: |
         cd swhid-rs
-        echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+        if [ -f Cargo.lock ]; then
+          echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "Cargo.lock found, hash computed"
+        else
+          # Generate Cargo.lock if it doesn't exist (libraries sometimes don't commit it)
+          echo "Cargo.lock not found, generating it..."
+          cargo generate-lockfile 2>&1 || echo "Warning: Could not generate Cargo.lock"
+          if [ -f Cargo.lock ]; then
+            echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+            echo "Cargo.lock generated, hash computed"
+          else
+            # Fallback: use a hash of Cargo.toml if Cargo.lock can't be generated
+            echo "CARGO_LOCK_HASH=$(sha256sum Cargo.toml | cut -d' ' -f1)" >> "$GITHUB_ENV"
+            echo "Using Cargo.toml hash as fallback"
+          fi
+        fi
+        echo "CARGO_LOCK_HASH=${{ env.CARGO_LOCK_HASH }}"
 
     # ------------------------------------------------------------
     # Cache 1: Cargo registry + git (download cache)
@@ -87,6 +103,7 @@ runs:
 
     # ------------------------------------------------------------
     # Cache 2: Rust target dir (compiled outputs, strict)
+    # Include commit hash so cache invalidates when source changes
     # ------------------------------------------------------------
     - name: Cache Rust target dir
       uses: actions/cache@v4
@@ -99,7 +116,12 @@ runs:
           ${{ env.SWHID_RS_PROFILE }}-
           feat${{ env.SWHID_RS_FEATURES }}-
           ${{ env.RUSTC_HASH }}-
-          ${{ env.CARGO_LOCK_HASH }}
+          ${{ env.CARGO_LOCK_HASH }}-
+          ${{ env.SWHID_RS_COMMIT }}
+        restore-keys: |
+          swhid-rs-target-${{ runner.os }}-${{ inputs.rust }}-${{ env.SWHID_RS_PROFILE }}-feat${{ env.SWHID_RS_FEATURES }}-${{ env.RUSTC_HASH }}-${{ env.CARGO_LOCK_HASH }}-
+          swhid-rs-target-${{ runner.os }}-${{ inputs.rust }}-${{ env.SWHID_RS_PROFILE }}-feat${{ env.SWHID_RS_FEATURES }}-${{ env.RUSTC_HASH }}-
+          swhid-rs-target-${{ runner.os }}-${{ inputs.rust }}-${{ env.SWHID_RS_PROFILE }}-
 
     # ------------------------------------------------------------
     # Build

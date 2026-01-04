@@ -6,7 +6,7 @@ This module handles result serialization, formatting, and summary generation.
 
 import platform
 from typing import List, Dict, Callable, Tuple, Optional
-from datetime import datetime
+from datetime import datetime, UTC
 
 from .plugins.base import SwhidImplementation, ImplementationInfo, SwhidTestResult
 from .utils.constants import TestStatus, SWHID_V1_PREFIX, SWHID_V2_PREFIX
@@ -57,7 +57,7 @@ class OutputGenerator:
             HarnessResults in canonical format
         """
         # Create run info
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         run_info = RunInfo(
             id=make_run_id(),
             created_at=now,

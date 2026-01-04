@@ -8,7 +8,7 @@ the canonical JSON format used by the dashboard and other tools.
 from __future__ import annotations
 from typing import Optional, List, Dict, Literal, Any
 from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime
+from datetime import datetime, UTC
 
 SchemaVersion = Literal["1.0.0"]
 Status = Literal["PASS", "FAIL", "SKIPPED"]
@@ -172,7 +172,7 @@ class HarnessResults(BaseModel):
 def make_run_id() -> str:
     """Generate a unique run ID with timestamp and short hash."""
     import hashlib
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     timestamp = now.strftime("%Y-%m-%dT%H-%M-%SZ")
     hash_suffix = hashlib.sha1(timestamp.encode()).hexdigest()[:6]
     return f"{timestamp}_{hash_suffix}"
