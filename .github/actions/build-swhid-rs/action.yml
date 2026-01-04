@@ -25,9 +25,9 @@ inputs:
   token:
     description: >
       GitHub token with read access to the repository.
-      Required for private repositories.
+      Optional for public repositories. If empty or not provided, uses GITHUB_TOKEN.
     required: false
-    default: ${{ github.token }}
+    default: ""
 
 runs:
   using: composite
@@ -51,7 +51,9 @@ runs:
         echo "RUSTC_HASH=$(rustc -Vv | sha256sum | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
     # ------------------------------------------------------------
-    # Authenticated checkout (PRIVATE-REPO SAFE)
+    # Authenticated checkout (supports both public and private repos)
+    # For public repos, GITHUB_TOKEN is sufficient (default)
+    # For private repos, provide a token with read access
     # ------------------------------------------------------------
     - name: Checkout swhid-rs
       uses: actions/checkout@v4
@@ -60,7 +62,8 @@ runs:
         ref: ${{ inputs.ref }}
         path: swhid-rs
         fetch-depth: 1
-        token: ${{ inputs.token }}
+        # Use provided token or fall back to GITHUB_TOKEN (default)
+        token: ${{ inputs.token != '' && inputs.token || github.token }}
 
     # ------------------------------------------------------------
     # Dependency fingerprint

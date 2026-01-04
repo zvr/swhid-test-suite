@@ -1,0 +1,166 @@
+name: Bisect regression (diagnostic)
+
+on:
+  workflow_dispatch:
+    inputs:
+      good:
+        description: "Known good commit (inclusive)"
+        required: true
+      bad:
+        description: "Known bad commit (inclusive, often HEAD)"
+        required: false
+        default: "HEAD"
+      test_filter:
+        description: "Optional test filter (passed to harness)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  bisect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240  # bisect can be slow
+
+    env:
+      SWHID_RS_PROFILE: release
+      SWHID_RS_FEATURES: git
+      RUBY_VERSION: "3.2"
+
+    steps:
+      # ------------------------------------------------------------
+      # Full history checkout (MANDATORY for bisect)
+      # ------------------------------------------------------------
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ------------------------------------------------------------
+      # Basic validation of inputs
+      # ------------------------------------------------------------
+      - name: Validate bisect inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GOOD="${{ inputs.good }}"
+          BAD="${{ inputs.bad }}"
+
+          git cat-file -e "${GOOD}^{commit}" \
+            || { echo "ERROR: good commit '${GOOD}' not found"; exit 1; }
+
+          git cat-file -e "${BAD}^{commit}" \
+            || { echo "ERROR: bad commit '${BAD}' not found"; exit 1; }
+
+          echo "Bisect range: ${GOOD} .. ${BAD}"
+
+      # ------------------------------------------------------------
+      # Toolchain setup (same as test-ubuntu)
+      # ------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: false
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            ruby-dev
+
+      # ------------------------------------------------------------
+      # Python deps (optional, guarded)
+      # ------------------------------------------------------------
+      - name: Install Python dependencies (optional)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+
+          reqs=()
+          [ -f requirements.txt ] && reqs+=("-r" "requirements.txt")
+          [ -f requirements-dev.txt ] && reqs+=("-r" "requirements-dev.txt")
+
+          if [ ${#reqs[@]} -gt 0 ]; then
+            python -m pip install "${reqs[@]}"
+          else
+            echo "No Python requirements files; skipping."
+          fi
+
+      # ------------------------------------------------------------
+      # Ruby GEM_HOME (deterministic, cacheable)
+      # ------------------------------------------------------------
+      - name: Configure GEM_HOME
+        shell: bash
+        run: |
+          echo "GEM_HOME=${{ runner.temp }}/gem-home" >> "$GITHUB_ENV"
+          echo "GEM_PATH=${{ runner.temp }}/gem-home" >> "$GITHUB_ENV"
+          echo "${{ runner.temp }}/gem-home/bin" >> "$GITHUB_PATH"
+
+      - name: Cache GEM_HOME
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/gem-home
+          key: gemhome-${{ runner.os }}-ruby-${{ env.RUBY_VERSION }}-${{ hashFiles('**/Gemfile.lock') }}
+          restore-keys: |
+            gemhome-${{ runner.os }}-ruby-${{ env.RUBY_VERSION }}-
+
+      - name: Install swhid gem
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ruby -e "require 'swhid'" >/dev/null 2>&1; then
+            echo "swhid gem already available"
+          else
+            gem install swhid --no-document
+          fi
+
+      # ------------------------------------------------------------
+      # Rust (swhid-rs) – shared composite action
+      # ------------------------------------------------------------
+      - name: Build swhid-rs with cache
+        uses: ./.github/actions/build-swhid-rs
+        with:
+          rust: stable
+          profile: ${{ env.SWHID_RS_PROFILE }}
+          features: ${{ env.SWHID_RS_FEATURES }}
+          repository: swhid/swhid-rs
+          ref: main
+          # Token is optional for public repos - action will use GITHUB_TOKEN if not provided
+          token: ${{ secrets.SWHID_RS_TOKEN != '' && secrets.SWHID_RS_TOKEN || '' }}
+
+      - name: Add swhid-rs binary to PATH
+        shell: bash
+        run: |
+          echo "${CARGO_TARGET_DIR}/release" >> "$GITHUB_PATH"
+
+      # ------------------------------------------------------------
+      # Run bisect (THE ONLY PLACE IT SHOULD RUN)
+      # ------------------------------------------------------------
+      - name: Run bisect harness
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export BISECT_GOOD="${{ inputs.good }}"
+          export BISECT_BAD="${{ inputs.bad }}"
+          export TEST_FILTER="${{ inputs.test_filter }}"
+
+          echo "Starting bisect:"
+          echo "  GOOD=${BISECT_GOOD}"
+          echo "  BAD=${BISECT_BAD}"
+          echo "  FILTER=${TEST_FILTER}"
+
+          ./bisect_harness.sh
